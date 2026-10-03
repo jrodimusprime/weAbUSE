@@ -33,6 +33,8 @@ const MIDDLE_DRAW = new Set(['exp_draw', 'middle_draw']);
 export class Game {
   constructor(canvas, hud) {
     this.r = new Renderer(canvas, VIEW_W, VIEW_H);
+    this.viewW = VIEW_W;
+    this.viewH = VIEW_H;
     this.assets = new Assets();
     this.audio = new Audio();
     this.hud = hud;
@@ -260,9 +262,24 @@ export class Game {
     return true;
   }
 
+  // The collision body is measured from a locomotion frame rather than whichever
+  // pose is playing: transient frames (e.g. a roof ant's tall falling sprite)
+  // would otherwise be cached and leave the entity wedged inside the ceiling.
+  bodySprite(e) {
+    if (e.def.file) {
+      for (const s of ['stopped', 'running', 'walking', 'top_walk', 'climbing']) {
+        const f = e.def.states.get(s);
+        if (!f?.length) continue;
+        const img = this.assets.sprite(e.def.file, f[0]);
+        if (img) return img;
+      }
+    }
+    return this.spriteOf(e);
+  }
+
   box(e) {
     if (!e.hw) {
-      const img = this.spriteOf(e);
+      const img = this.bodySprite(e);
       e.hw = Math.max(4, Math.floor((img?.w || 16) * 0.35));
       e.bh = Math.max(6, (img?.h || 20) - 3);
     }
@@ -283,11 +300,26 @@ export class Game {
     const ny = Math.ceil(Math.abs(dy)), sy = Math.sign(dy);
     for (let i = 0; i < ny; i++) {
       const y = e.y + sy * Math.min(1, Math.abs(dy) - i);
-      if (!this.boxHits(e.x, y, hw, bh, e)) { e.y = y; continue; }
+      if (!this.verticalHits(e, y, hw, bh, sy > 0)) { e.y = y; continue; }
       if (sy > 0) out.down = true; else out.up = true;
       break;
     }
     return out;
+  }
+
+  // Vertical movement only tests the moving edge, matching the original engine's
+  // feet/head spine test: a falling object is blocked by its feet, a rising one
+  // by its head. Testing the whole body would wedge tall poses (e.g. a roof ant
+  // hanging just under the ceiling) permanently against the ceiling tile.
+  verticalHits(e, y, hw, bh, down) {
+    const cx = Math.floor(e.x);
+    const edge = Math.floor(down ? y : y - bh + 1);
+    if (this.tileSolid(cx, edge)) return true;
+    for (const s of this.solids) {
+      if (s.e === e) continue;
+      if (e.x + hw >= s.x0 && e.x - hw <= s.x1 && edge >= s.y0 && edge <= s.y1) return true;
+    }
+    return false;
   }
 
   // ---- entity helpers ----
@@ -493,6 +525,8 @@ export class Game {
       }
       e.stateTime++;
       if (fn(e, this) === false) e.dead = true;
+      // Anything that falls out of the world is removed (as the original does).
+      else if (e.y > this.level.fgH * this.th + 160) e.dead = true;
     }
     updateProjectiles(this);
     this.entities = this.entities.filter((e) => !e.dead);
@@ -567,7 +601,8 @@ export class Game {
 
     if (!p.climbing) {
       const target = (right ? 1 : 0) - (left ? 1 : 0);
-      const power = this.rightDown ? p.power : null;
+      // Right mouse activates a held power; god mode always grants the FAST run.
+      const power = (this.rightDown && p.power) || (this.god ? 'FAST' : null);
       const run = RUN_SPEED * (power === 'FAST' ? 1.7 : 1);
       const accel = p.ground ? 1400 : 700;
       if (target) { p.dir = target; p.vx += target * accel * dt; p.vx = Math.max(-run, Math.min(run, p.vx)); }
@@ -725,6 +760,7 @@ export class Game {
     const owned = WEAPON_ORDER.map((n, i) => `${p.owned.has(n) ? (n === p.weapon ? '[' : ' ') : '-'}${i + 1}${n === p.weapon ? ']' : ' '}`).join('');
     const here = this.godDeaths[this.level.name] || 0;
     const total = Object.values(this.godDeaths).reduce((a, b) => a + b, 0);
-    this.hud.textContent = `${this.level.name}  HP ${Math.ceil(p.hp)}  ${w.label} ${p.ammo[p.weapon] || 0}  ${owned}${this.god ? `  GOD deaths: ${here} here, ${total} total` : ''}${this.msgTime > 0 ? `  -- ${this.msg}` : ''}`;
+    const ammo = this.god ? '∞' : (p.ammo[p.weapon] || 0);
+    this.hud.textContent = `${this.level.name}  HP ${Math.ceil(p.hp)}  ${w.label} ${ammo}  ${owned}${this.god ? `  GOD deaths: ${here} here, ${total} total` : ''}${this.msgTime > 0 ? `  -- ${this.msg}` : ''}`;
   }
 }

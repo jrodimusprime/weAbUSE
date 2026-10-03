@@ -25,8 +25,10 @@ export function firePlayer(g) {
   const p = g.player;
   const w = WEAPONS[p.weapon];
   if (!w || p.cooldown > 0 || p.dead) return;
-  if ((p.ammo[p.weapon] || 0) <= 0) return;
-  p.ammo[p.weapon]--;
+  if (!g.god) {
+    if ((p.ammo[p.weapon] || 0) <= 0) return;
+    p.ammo[p.weapon]--;
+  }
   p.cooldown = w.delay;
   const ang = p.aimAngle;
   const c = Math.cos(ang), s = -Math.sin(ang);
