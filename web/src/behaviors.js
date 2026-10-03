@@ -315,6 +315,16 @@ function sensor(e, g) {
   return true;
 }
 
+function deathSensor(e) {
+  e.links = e.links.filter((target) =>
+    !target.dead && target.state !== 'dead' && target.state !== 'blown_back_dead');
+  if (e.links.length === 0) {
+    e.setState('running');
+    e.aistate = 1;
+  }
+  return true;
+}
+
 function setOnState(e, on) {
   e.aistate = on ? 1 : 0;
   e.setState(on ? 'on_state' : 'stopped');
@@ -666,6 +676,7 @@ export const behaviors = {
   switcher_ai: switcher(false),
   switch_once_ai: switcher(true),
   sensor_ai: sensor,
+  death_sen_ai: deathSensor,
   hwall_ai: wall(false),
   big_wall_ai: wall(true),
   next_level_ai: nextLevel,
