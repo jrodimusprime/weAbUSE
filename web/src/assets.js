@@ -53,7 +53,7 @@ export class Assets {
 
   defChar(it, args, env) {
     const name = args[0].name;
-    const def = { name, file: null, states: new Map(), funs: new Map(), flags: new Map(), abilities: new Map() };
+    const def = { name, file: null, states: new Map(), funs: new Map(), flags: new Map(), abilities: new Map(), range: [0, 0] };
     for (const clause of args.slice(1)) {
       if (!Array.isArray(clause) || !clause.length) continue;
       const head = clause[0].name;
@@ -70,6 +70,8 @@ export class Assets {
         for (const f of clause.slice(1)) if (Array.isArray(f) && f[1]?.name) def.funs.set(f[0].name, f[1].name);
       } else if (head === 'flags') {
         for (const f of clause.slice(1)) if (Array.isArray(f)) def.flags.set(f[0].name, f[1]?.name ?? f[1]);
+      } else if (head === 'range') {
+        def.range = [Number(clause[1]) || 0, Number(clause[2]) || 0];
       } else if (head === 'abilities') {
         for (const f of clause.slice(1)) if (Array.isArray(f) && typeof f[1] === 'number') def.abilities.set(f[0].name, f[1]);
       }

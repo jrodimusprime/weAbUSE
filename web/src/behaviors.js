@@ -8,14 +8,15 @@ export const LOGIC_AI = new Set([
 ]);
 
 // Door-like objects block the player until they reach their fully open ('blocking') state.
-export const SOLID_AI = new Set(['sdoor_ai', 'strap_door_ai', 'hwall_ai', 'big_wall_ai']);
+export const SOLID_AI = new Set(['sdoor_ai', 'strap_door_ai', 'hwall_ai', 'big_wall_ai', 'platform_ai']);
 
 const HIDDEN_DRAW = new Set(['dev_draw', 'sensor_draw']);
 export const isHiddenInPlay = (def) => HIDDEN_DRAW.has(def.funs.get('draw_fun'));
 
 const GRAVITY = 2;
 const link0 = (e) => e.links[0];
-const activated = (e, g) => (e.links.length ? link0(e).aistate !== 0 : g.touchesPlayer(e));
+// Unlinked objects count as activated; linked ones follow their first link.
+const activated = (e) => (e.links.length ? link0(e).aistate !== 0 : true);
 const goState = (e, s) => { e.aistate = s; e.stateTime = 0; };
 
 function fall(e, g) {
@@ -374,6 +375,182 @@ function effect(e) {
   return e.nextPicture();
 }
 
+function saveStation(e, g) {
+  if (e.aistate === 0) {
+    if (e.state !== 'stopped') e.setState('stopped');
+    e.nextPicture();
+    if (g.touchesPlayer(e) && g.pressed('action')) { e.setState('running'); e.aistate = 1; e.a.t = 0; g.sound('switch', e.x, e.y); g.setCheckpoint(e.x, e.y); }
+  } else {
+    e.nextPicture();
+    if (++e.a.t > 6) { e.setState('stopped'); e.aistate = 0; }
+  }
+  return true;
+}
+
+// Teleporting doors: open as the player nears, press the action key to hop to the linked door.
+function tpDoor(e, g) {
+  const p = g.player;
+  const other = e.links[0];
+  const near = Math.abs(p.x - e.x) < 100 && Math.abs(p.y - e.y) < 80;
+  const frames = e.frames().length;
+  e.a.opening = near || !!other?.a.opening;
+  if (e.a.opening) e.frame = Math.min(frames - 1, e.frame + 1); else e.frame = Math.max(0, e.frame - 1);
+  if (other && !g.tpLatch && g.pressed('action') && Math.abs(p.x - e.x) < 20 && Math.abs(p.y - e.y) < 30) {
+    p.x = other.x; p.y = other.y; p.vx = 0; p.vy = 0;
+    g.tpLatch = true;
+    g.sound('teleport', e.x, e.y);
+  }
+  return true;
+}
+
+function forceField(e, g) {
+  if (e.a.endY === undefined) {
+    let y = Math.floor(e.y);
+    while (y < e.y + 400 && !g.tileSolid(Math.floor(e.x), y)) y++;
+    e.a.endY = y;
+  }
+  if (activated(e)) {
+    e.a.solidRect = { x0: e.x - 2, x1: e.x + 2, y0: e.y, y1: e.a.endY };
+    e.a.beam = true;
+    if (g.tickCount % 4 === 0) g.sound('swish', e.x, e.y);
+  } else { e.a.solidRect = null; e.a.beam = false; }
+  return true;
+}
+
+function lightning(e, g) {
+  if (!activated(e)) return true;
+  if (e.aistate === 0) {
+    if (e.stateTime < e.aitype * 2) e.setState('stopped');
+    else { e.setState('running'); g.sound('teleport', e.x, e.y); goState(e, 1); }
+  } else if (!e.nextPicture()) { e.aistate = 0; e.stateTime = 0; e.setState('stopped'); }
+  else if (g.touchesPlayer(e)) g.hurtPlayer(6);
+  return true;
+}
+
+function antCrack(e, g) {
+  if (e.aistate === 0) {
+    const p = g.player;
+    const go = e.links.length ? link0(e).aistate !== 0 : Math.abs(p.x - e.x) < 50 && Math.abs(p.y - e.y) < 70;
+    if (go) e.aistate = 1;
+    return true;
+  }
+  e.a.total ??= e.lv?.create_total || 1;
+  switch (e.frame) {
+    case 4: break;
+    case 3: {
+      const ant = g.spawn('ANT_ROOF', e.x + e.dir * 20, e.y);
+      if (ant) {
+        ant.dir = e.dir; ant.vx = e.dir * 11; ant.vy = -8;
+        ant.setState('run_jump');
+        ant.a.st = 'jump';
+      }
+      if (e.a.total <= 1) e.frame = 4; else { e.a.total--; e.frame = 0; }
+      break;
+    }
+    default: e.frame++;
+  }
+  return true;
+}
+
+function boulder(e, g) {
+  const a = e.a;
+  if (e.links.length && link0(e).aistate === 0) return true;
+  if (e.hp <= 0) { g.explode(e.x, e.y - 10, 30, 10, false); return false; }
+  if (!a.init) { e.vx = e.xvel || -4; e.vy = e.yvel || 0; a.init = true; }
+  e.nextPicture();
+  if (a.cd > 0) a.cd--;
+  e.vy += 1;
+  const ox = e.vx, oy = e.vy;
+  const m = g.moveEntity(e, e.vx, e.vy);
+  if (m.down || m.up) {
+    if (Math.abs(oy) > 3) g.sound('antland', e.x, e.y);
+    e.vy = oy > 1 ? 2 - oy : -oy;
+  } else if (m.blockedX) e.vx = -ox;
+  if (!a.cd && g.touchesPlayer(e)) { g.hurtPlayer(15); a.cd = 4; }
+  return true;
+}
+
+function jugger(e, g) {
+  const p = g.player, a = e.a;
+  if (e.hp <= 0) {
+    if (e.state === 'dieing') {
+      if (!e.nextPicture()) { g.effect('EXPLODE1', e.x, e.y - 20); g.sound('explode', e.x, e.y); return false; }
+      return true;
+    }
+    e.setState('dieing');
+    return true;
+  }
+  if (a.cd > 0) a.cd--;
+  if (!a.cd && g.touchesPlayer(e)) { g.hurtPlayer(8); a.cd = 6; }
+  const stationary = e.lv?.stationary || 0;
+  switch (e.aistate) {
+    case 0:
+      if (!stationary) { e.setState('running'); goState(e, 1); } else if (e.stateTime > (e.aitype || 8)) { e.setState('weapon_fire'); goState(e, 2); }
+      break;
+    case 1: {
+      e.dir = p.x > e.x ? 1 : -1;
+      const img = g.spriteOf(e);
+      const step = Math.max(2, Math.abs(img?.advance || 3));
+      const ox = e.x, oy = e.y;
+      g.moveEntity(e, e.dir * step, 0);
+      if (!g.moveEntity(e, 0, 10).down) { e.x = ox; e.y = oy; }
+      if (!e.nextPicture()) { e.setState('weapon_fire'); goState(e, 2); }
+      break;
+    }
+    case 2:
+      if (e.stateTime > 3) {
+        g.projs.push({
+          kind: 'grenade', x: e.x, y: e.y - 24, px: e.x, py: e.y - 24,
+          vx: (e.lv?.throw_xvel || 8) * e.dir, vy: e.lv?.throw_yvel || -8, gravity: 2, life: 40, dmg: 40, radius: 50, mine: false, def: 'GRENADE', bounces: 0,
+        });
+        g.sound('throw', e.x, e.y);
+        goState(e, 3);
+      } else e.nextPicture();
+      break;
+    case 3:
+      if (!e.nextPicture()) e.aistate = 0;
+      break;
+    default: e.aistate = 0;
+  }
+  return true;
+}
+
+// Elevators: links[0] and links[1] are the two end points (usually sensors), links[2] an optional enable switch.
+// The platform travels to links[aitype] when that end's sensor fires or the rider presses the action key.
+function platform(e, g) {
+  const n = e.links.length;
+  if (!(n === 2 || (n === 3 && e.links[2].aistate !== 0))) { e.setState('stopped'); return true; }
+  if (e.state === 'stopped') e.setState('running'); else e.nextPicture();
+  const speed = () => (e.aistate === 0 || e.yacel === 0 ? e.xacel : e.yacel) || 20;
+  switch (e.aistate) {
+    case 0:
+      if ((e.links[e.aitype] && e.links[e.aitype].aistate !== 0) || (g.touchesPlayer(e) && g.pressed('action'))) goState(e, 2);
+      break;
+    case 2:
+      g.sound('swish', e.x, e.y);
+      e.aitype = 1 - e.aitype;
+      e.xvel = speed();
+      goState(e, 3);
+      break;
+    case 3: {
+      const src = e.links[e.aitype], dst = e.links[1 - e.aitype];
+      if (!src || !dst) { e.aistate = 0; break; }
+      let nx, ny;
+      if (e.xvel <= 0) { nx = dst.x; ny = dst.y; e.aistate = 0; } else {
+        const sp = speed();
+        nx = dst.x - Math.trunc(((dst.x - src.x) * e.xvel) / sp);
+        ny = dst.y - Math.trunc(((dst.y - src.y) * e.xvel) / sp);
+        e.xvel--;
+      }
+      g.pushRiders(e, nx - e.x, ny - e.y);
+      e.x = nx; e.y = ny;
+      break;
+    }
+    default: e.aistate = 0;
+  }
+  return true;
+}
+
 export const behaviors = {
   ant_ai: ant,
   flyer_ai: flyer,
@@ -391,6 +568,14 @@ export const behaviors = {
   big_wall_ai: wall(true),
   next_level_ai: nextLevel,
   tp2_ai: teleporter,
+  platform_ai: platform,
+  restart_ai: saveStation,
+  tpd_ai: tpDoor,
+  ff_ai: forceField,
+  lightin_ai: lightning,
+  crack_ai: antCrack,
+  bolder_ai: boulder,
+  jug_ai: jugger,
   exp_ai: effect,
   animate_ai: (e) => { e.nextPicture(); return true; },
   ...items,

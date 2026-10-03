@@ -39,6 +39,7 @@ export class Game {
     this.mouse = null;
     this.mouseDown = false;
     this.god = false;
+    this.godDeaths = JSON.parse(localStorage.getItem('abuse.godDeaths') || '{}');
     this.level = null;
     this.entities = [];
     this.solids = [];
@@ -291,9 +292,21 @@ export class Game {
   refreshSolids() {
     this.solids = [];
     for (const e of this.entities) {
-      if (e.dead || !SOLID_AI.has(e.ai) || e.state === 'blocking') continue;
+      if (e.dead) continue;
+      if (e.a.solidRect) { this.solids.push({ ...e.a.solidRect, e }); continue; }
+      if (!SOLID_AI.has(e.ai) || e.state === 'blocking') continue;
       const r = this.rectOf(e);
       if (r) this.solids.push({ ...r, e });
+    }
+  }
+
+  // Moves the player along with a platform they are standing on.
+  pushRiders(e, dx, dy) {
+    const p = this.player;
+    const r = this.rectOf(e);
+    if (!r || p.dead || (!dx && !dy)) return;
+    if (p.x + HALF_W >= r.x0 && p.x - HALF_W <= r.x1 && Math.abs(p.y - r.y0) <= 4) {
+      p.x += dx; p.y += dy; p.vy = 0; p.ground = true;
     }
   }
 
@@ -302,6 +315,7 @@ export class Game {
     if (!def) return null;
     const e = new Entity(def, { x, y });
     e.logic = false;
+    e.shootable = def.flags.get('hurtable') === 'T';
     this.entities.push(e);
     return e;
   }
@@ -349,9 +363,31 @@ export class Game {
 
   hurtPlayer(amount) {
     const p = this.player;
-    if (this.god || p.dead) return;
+    if (p.dead) return;
     p.hp -= amount;
-    if (p.hp <= 0) { p.hp = 0; p.dead = true; p.deadTime = 2; p.vx = 0; this.sound('die'); }
+    if (p.hp > 0) return;
+    if (this.god) { this.countGodDeath(); p.hp = p.maxhp; return; }
+    p.hp = 0; p.dead = true; p.deadTime = 2; p.vx = 0; this.sound('die');
+  }
+
+  // In god mode the player survives, but each would-be death is tallied per level.
+  countGodDeath() {
+    const name = this.level.name;
+    this.godDeaths[name] = (this.godDeaths[name] || 0) + 1;
+    localStorage.setItem('abuse.godDeaths', JSON.stringify(this.godDeaths));
+    this.sound('die');
+  }
+
+  toast(text) {
+    this.msg = text;
+    this.msgTime = 45;
+  }
+
+  // Save stations move the respawn point and restore health.
+  setCheckpoint(x, y) {
+    this.startPos = { x, y };
+    this.player.hp = this.player.maxhp;
+    this.toast('Checkpoint saved');
   }
 
   giveHealth(n) {
@@ -378,12 +414,20 @@ export class Game {
 
   tick() {
     const p = this.player;
+    if (!this.pressed('action')) this.tpLatch = false;
+    this.tickCount = (this.tickCount || 0) + 1;
+    if (this.msgTime > 0) this.msgTime--;
     for (const e of this.entities) { e.px = e.x; e.py = e.y; }
     for (const e of this.entities.slice()) {
       if (e.dead || !e.ai) continue;
       const fn = behaviors[e.ai];
       if (!fn) continue;
-      if (!e.logic && (Math.abs(e.x - p.x) > 640 || Math.abs(e.y - p.y) > 440)) continue;
+      if (!e.logic) {
+        const [rx, ry] = e.def.range;
+        const off = e.x < this.cam.x - rx - 20 || e.x > this.cam.x + VIEW_W + rx + 20
+          || e.y < this.cam.y - ry - 40 || e.y > this.cam.y + VIEW_H + ry + 80;
+        if (off) continue;
+      }
       e.stateTime++;
       if (fn(e, this) === false) e.dead = true;
     }
@@ -447,7 +491,10 @@ export class Game {
         while (d < 6 && !this.boxHits(p.x, p.y + 1, HALF_W, BODY_H, null) && !this.boxHits(p.x, p.y, HALF_W, BODY_H, null)) { p.y++; d++; }
       }
       this.moveY(p, p.vy * dt);
-      if (p.y > this.level.fgH * this.th + 100) { p.y = this.startPos.y; p.x = this.startPos.x; p.vy = 0; }
+      if (p.y > this.level.fgH * this.th + 100) {
+        if (this.god) this.countGodDeath();
+        p.y = this.startPos.y; p.x = this.startPos.x; p.vy = 0;
+      }
 
       p.anim += dt * (p.ground && Math.abs(p.vx) > 10 ? 15 * Math.abs(p.vx) / RUN_SPEED * 1.4 : 6);
       p.state = !p.ground ? (p.vy < 0 ? 'run_jump' : 'run_jump_fall') : Math.abs(p.vx) > 10 ? 'running' : 'stopped';
@@ -539,11 +586,13 @@ export class Game {
     const fx = [];
     for (const e of this.entities) {
       if (e.dead || e.hidden) continue;
-      const x = e.px + (e.x - e.px) * alpha, y = e.py + (e.y - e.py) * alpha;
+      const still = e.ai === 'platform_ai'; // riders move in 15 Hz steps, so keep the platform in step with them
+      const x = still ? e.x : e.px + (e.x - e.px) * alpha, y = still ? e.y : e.py + (e.y - e.py) * alpha;
       if (x < cx - 160 || x > cx + VIEW_W + 160 || y < cy - 80 || y > cy + VIEW_H + 200) continue;
       if (isHiddenInPlay(e.def)) continue;
       if (MIDDLE_DRAW.has(e.def.funs.get('draw_fun'))) { fx.push([e, x, y]); continue; }
       this.blit(e.def, e.state, e.frame, x, y, e.dir);
+      if (e.a.beam) this.drawBeam(e);
     }
 
     const p = this.player;
@@ -557,10 +606,23 @@ export class Game {
     r.flush();
   }
 
+  // Force-field beam from the emitter down to the floor.
+  drawBeam(e) {
+    const { x0, x1, y0, y1 } = e.a.solidRect;
+    const sx = Math.round((x0 + x1) / 2 - this.cam.x);
+    const top = Math.round(y0 - this.cam.y), h = Math.round(y1 - y0);
+    if (sx < -4 || sx > VIEW_W + 4 || top > VIEW_H || top + h < 0) return;
+    const flick = this.rand(3);
+    this.r.rect(sx - 1, top, 3, h, flick ? this.colors.cyan : this.colors.white);
+    this.r.rect(sx, top, 1, h, this.colors.white);
+  }
+
   updateHud() {
     const p = this.player;
     const w = WEAPONS[p.weapon];
     const owned = WEAPON_ORDER.map((n, i) => `${p.owned.has(n) ? (n === p.weapon ? '[' : ' ') : '-'}${i + 1}${n === p.weapon ? ']' : ' '}`).join('');
-    this.hud.textContent = `${this.level.name}  HP ${Math.ceil(p.hp)}  ${w.label} ${p.ammo[p.weapon] || 0}  ${owned}${this.god ? '  GOD' : ''}`;
+    const here = this.godDeaths[this.level.name] || 0;
+    const total = Object.values(this.godDeaths).reduce((a, b) => a + b, 0);
+    this.hud.textContent = `${this.level.name}  HP ${Math.ceil(p.hp)}  ${w.label} ${p.ammo[p.weapon] || 0}  ${owned}${this.god ? `  GOD deaths: ${here} here, ${total} total` : ''}${this.msgTime > 0 ? `  -- ${this.msg}` : ''}`;
   }
 }
