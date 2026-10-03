@@ -59,6 +59,38 @@ if (isMobile) {
     btn.addEventListener('pointercancel', release);
     btn.addEventListener('pointerleave', release);
   }
+
+  // Virtual joystick: drag straight from one direction to another without
+  // lifting (and hold diagonals). The knob follows the finger inside the base.
+  const stick = document.getElementById('stick');
+  const knob = stick.querySelector('.knob');
+  const DIRS = ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'];
+  const setDirs = (keys) => DIRS.forEach((k) => (keys.includes(k) ? game.keys.add(k) : game.keys.delete(k)));
+  let stickPointer = null;
+  const stickMove = (e) => {
+    const r = stick.getBoundingClientRect();
+    const max = r.width / 2;
+    let dx = e.clientX - (r.left + r.width / 2);
+    let dy = e.clientY - (r.top + r.height / 2);
+    const len = Math.hypot(dx, dy);
+    if (len > max) { dx = (dx / len) * max; dy = (dy / len) * max; }
+    knob.style.transform = `translate(${dx.toFixed(1)}px, ${dy.toFixed(1)}px)`;
+    const dz = max * 0.34;
+    const keys = [];
+    if (dx < -dz) keys.push('ArrowLeft'); else if (dx > dz) keys.push('ArrowRight');
+    if (dy < -dz) keys.push('ArrowUp'); else if (dy > dz) keys.push('ArrowDown');
+    setDirs(keys);
+  };
+  const stickEnd = () => { stickPointer = null; knob.style.transform = 'translate(0, 0)'; setDirs([]); };
+  stick.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    stickPointer = e.pointerId;
+    try { stick.setPointerCapture(e.pointerId); } catch { /* synthetic pointer */ }
+    stickMove(e);
+  });
+  stick.addEventListener('pointermove', (e) => { if (e.pointerId === stickPointer) stickMove(e); });
+  stick.addEventListener('pointerup', (e) => { if (e.pointerId === stickPointer) { e.preventDefault(); stickEnd(); } });
+  stick.addEventListener('pointercancel', (e) => { if (e.pointerId === stickPointer) stickEnd(); });
 }
 
 game.onGod = (on) => {

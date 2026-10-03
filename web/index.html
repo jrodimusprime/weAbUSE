@@ -7,7 +7,7 @@
   <style>
     html, body { margin: 0; height: 100%; background: #000; color: #ccc; font: 13px monospace; }
     #wrap { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; }
-    canvas { width: min(100vw, 160vh); aspect-ratio: 8 / 5; image-rendering: pixelated; cursor: crosshair; }
+    #c { width: min(100vw, 160vh); aspect-ratio: 8 / 5; image-rendering: pixelated; cursor: crosshair; }
     #stage { position: relative; }
     #hint { position: absolute; left: 0; right: 0; top: 6%; text-align: center; color: #fff; font: bold min(2.4vw, 3.8vh) monospace; text-shadow: 1px 1px 2px #000, -1px -1px 2px #000; pointer-events: none; }
     #bar { padding: 6px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; justify-content: center; }
@@ -15,22 +15,21 @@
     button.on { background: #7a1f1f; color: #fff; }
     body.touch { -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
     body.touch #help { display: none; }
-    body.touch canvas { touch-action: none; }
+    body.touch #c { touch-action: none; }
     #touch { display: none; width: 100%; box-sizing: border-box; padding: 10px 16px; gap: 24px; justify-content: space-between; align-items: center; }
     body.touch #touch { display: flex; }
-    #touch .dpad { display: grid; grid-template-columns: repeat(3, 62px); grid-template-rows: repeat(2, 62px); gap: 8px; }
-    #touch .dpad .up { grid-area: 1 / 2; }
-    #touch .dpad .left { grid-area: 2 / 1; }
-    #touch .dpad .down { grid-area: 2 / 2; }
-    #touch .dpad .right { grid-area: 2 / 3; }
-    #touch .acts { display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+    #touch .acts { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
     #touch button {
-      min-width: 62px; min-height: 62px; padding: 0 12px; border-radius: 14px;
-      border: 1px solid #555; background: #1c1c1c; color: #ddd; font: bold 18px monospace;
+      min-width: 52px; min-height: 52px; padding: 0 10px; border-radius: 12px;
+      border: 1px solid #555; background: #1c1c1c; color: #ddd; font: bold 15px monospace;
       touch-action: none; -webkit-user-select: none; user-select: none;
     }
-    #touch .dpad button { min-width: 0; min-height: 0; width: 100%; height: 100%; padding: 0; }
     #touch button.active { background: #7a1f1f; color: #fff; }
+    #stick { position: relative; width: 108px; height: 108px; border-radius: 50%; background: #141414; border: 1px solid #555; touch-action: none; flex: 0 0 auto; }
+    #stick .knob {
+      position: absolute; left: 50%; top: 50%; width: 46px; height: 46px; margin: -23px 0 0 -23px;
+      border-radius: 50%; background: #3a3a3a; border: 1px solid #777; pointer-events: none;
+    }
     #weapons { display: block; width: min(100%, 480px); height: auto; margin: 6px auto 0; image-rendering: pixelated; cursor: pointer; }
   </style>
 </head>
@@ -38,12 +37,7 @@
   <div id="wrap">
     <div id="stage"><canvas id="c"></canvas><div id="hint"></div></div>
     <div id="touch">
-      <div class="dpad">
-        <button class="up" data-key="ArrowUp" aria-label="Up / jump">▲</button>
-        <button class="left" data-key="ArrowLeft" aria-label="Left">◀</button>
-        <button class="down" data-key="ArrowDown" aria-label="Down">▼</button>
-        <button class="right" data-key="ArrowRight" aria-label="Right">▶</button>
-      </div>
+      <div id="stick" aria-label="Movement joystick"><div class="knob"></div></div>
       <div class="acts">
         <button data-key="KeyE" aria-label="Use switch">Use</button>
         <button data-act="special" aria-label="Special power">Special</button>
