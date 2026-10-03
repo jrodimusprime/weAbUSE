@@ -72,14 +72,15 @@ godBtn.addEventListener('click', () => { game.setGod(!game.god); godBtn.blur(); 
 
 await game.init();
 
-// Bottom weapon panel, like the original status bar: a bright icon for the
-// current weapon, dim icons for the others, and the ammo count under each gun.
+// Bottom status bar, drawn from the original artwork (art/statbar.spe): the
+// sbar background, bright/dim weapon icons, numpad windows, digit images and
+// the selection highlight, laid out exactly like the original status_bar.
 await game.assets.preloadDef({ file: 'art/statbar.spe' });
 const statbar = game.assets.specCache?.get('art/statbar.spe');
 const statbarPal = statbar?.ofType(T.PALETTE).length ? readPalette(statbar, statbar.ofType(T.PALETTE)[0]) : game.assets.palette;
-const iconURL = (name) => {
+const sbImage = (name) => {
   const img = game.assets.sprite('art/statbar.spe', name);
-  if (!img?.pix) return '';
+  if (!img?.pix) return null;
   const cv = document.createElement('canvas');
   cv.width = img.w; cv.height = img.h;
   const ctx = cv.getContext('2d');
@@ -91,47 +92,71 @@ const iconURL = (name) => {
     data.data[i * 4 + 3] = idx === 0 ? 0 : 255;
   }
   ctx.putImageData(data, 0, 0);
-  return cv.toDataURL();
+  return cv;
 };
-const slots = WEAPON_ORDER.map((weapon, i) => ({
-  weapon,
-  bright: iconURL(`bweap000${i + 1}.pcx`),
-  dim: iconURL(`dweap000${i + 1}.pcx`),
-}));
+const art = {
+  sbar: sbImage('sbar'), select: sbImage('sbar_select'), numpad: sbImage('sbar_numpad'),
+  bnum: Array.from({ length: 30 }, (_, i) => sbImage(`bnum${String(i).padStart(2, '0')}`)),
+  bright: WEAPON_ORDER.map((_, i) => sbImage(`bweap000${i + 1}.pcx`)),
+  dim: WEAPON_ORDER.map((_, i) => sbImage(`dweap000${i + 1}.pcx`)),
+};
+
+// Layout constants from status_bar::redraw (non-scaled render).
+const BAR_W = 320, BAR_H = 32, WX = 40, WA = 34, NUM_Y = 21, SEL_OFF = 4;
 const panel = document.getElementById('weapons');
-for (const slot of slots) {
-  const el = document.createElement('button');
-  el.type = 'button';
-  el.className = 'wslot';
-  el.title = slot.weapon;
-  const img = document.createElement('img');
-  img.alt = slot.weapon;
-  img.src = slot.dim;
-  const ammo = document.createElement('span');
-  ammo.className = 'ammo';
-  el.append(img, ammo);
-  el.addEventListener('click', () => { game.selectWeapon(slot.weapon); el.blur(); });
-  panel.appendChild(el);
+panel.width = BAR_W; panel.height = BAR_H;
+const pctx = panel.getContext('2d');
+pctx.imageSmoothingEnabled = false;
+let hover = -1;
+
+function drawNum(x, y, num, base) {
+  const b = art.bnum[base];
+  if (!b) return;
+  let n = Math.max(0, Math.min(999, Math.floor(num)));
+  const h = Math.floor(n / 100); n -= h * 100;
+  const t = Math.floor(n / 10), o = n - t * 10;
+  pctx.drawImage(art.bnum[base + h], x, y);
+  pctx.drawImage(art.bnum[base + t], x + b.width, y);
+  pctx.drawImage(art.bnum[base + o], x + 2 * b.width, y);
 }
-let lastWeaponSig = '';
-(function refreshWeapons() {
+
+function drawBar() {
+  const p = game.player;
+  if (!p || !art.sbar) return;
+  pctx.clearRect(0, 0, BAR_W, BAR_H);
+  pctx.drawImage(art.sbar, 0, 0);
+  drawNum(17, 11, Math.ceil(p.hp), 0);
+  for (let i = 0; i < WEAPON_ORDER.length; i++) {
+    const w = WEAPON_ORDER[i];
+    if (!p.owned.has(w)) continue;
+    const xOn = WX + i * WA, current = w === p.weapon;
+    pctx.drawImage(current ? art.bright[i] : art.dim[i], xOn, 0);
+    pctx.drawImage(art.numpad, xOn - 2, NUM_Y);
+    drawNum(52 + i * WA, 25, game.god ? 999 : (p.ammo[w] || 0), current ? 20 : 10);
+    if (i === hover) pctx.drawImage(art.select, xOn + SEL_OFF, 0);
+  }
+}
+let lastBarSig = '';
+(function refreshBar() {
   const p = game.player;
   if (p) {
-    const sig = WEAPON_ORDER.map((w) => `${p.owned.has(w) ? 1 : 0}${w === p.weapon ? 1 : 0}${p.ammo[w] || 0}`).join('|') + (game.god ? 'G' : '');
-    if (sig !== lastWeaponSig) {
-      lastWeaponSig = sig;
-      [...panel.children].forEach((el, i) => {
-        const w = WEAPON_ORDER[i];
-        const owned = p.owned.has(w);
-        el.classList.toggle('owned', owned);
-        el.classList.toggle('current', w === p.weapon);
-        el.querySelector('img').src = owned && w === p.weapon ? slots[i].bright : slots[i].dim;
-        el.querySelector('.ammo').textContent = owned ? (game.god ? '∞' : (p.ammo[w] || 0)) : '';
-      });
-    }
+    const sig = WEAPON_ORDER.map((w) => `${p.owned.has(w) ? 1 : 0}${w === p.weapon ? 1 : 0}${p.ammo[w] || 0}`).join('|')
+      + `|${Math.ceil(p.hp)}|${game.god ? 1 : 0}|${hover}`;
+    if (sig !== lastBarSig) { lastBarSig = sig; drawBar(); }
   }
-  requestAnimationFrame(refreshWeapons);
+  requestAnimationFrame(refreshBar);
 })();
+
+const barSlotAt = (clientX) => {
+  const r = panel.getBoundingClientRect();
+  if (!r.width) return -1;
+  const x = ((clientX - r.left) / r.width) * BAR_W;
+  const slot = Math.floor((x - WX) / WA);
+  return slot >= 0 && slot < WEAPON_ORDER.length && game.player?.owned.has(WEAPON_ORDER[slot]) ? slot : -1;
+};
+panel.addEventListener('mousemove', (e) => { hover = barSlotAt(e.clientX); });
+panel.addEventListener('mouseleave', () => { hover = -1; });
+panel.addEventListener('click', (e) => { const slot = barSlotAt(e.clientX); if (slot >= 0) game.selectWeapon(WEAPON_ORDER[slot]); });
 
 select.addEventListener('change', () => { select.blur(); game.start(select.value); });
 await game.start(LEVELS[0]);

@@ -31,7 +31,7 @@ Any static file server works. The game fetches about 22 MB of art, levels and so
 
 On mobile, tapping the screen aims and fires, and on-screen buttons below the canvas provide move (▲ ▼ ◀ ▶), **Use**, **Special** power and **Lights**.
 
-Below the screen a weapon panel shows every gun with its ammo, highlighting the current one; click an owned weapon to switch.
+Below the screen the original status bar (`art/statbar.spe`) is drawn — health, each owned gun's icon (bright for the current weapon) and its ammo; click a gun to switch.
 
 ## Status
 
