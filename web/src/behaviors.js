@@ -375,7 +375,7 @@ function teleporter(e, g) {
     if (g.touchesPlayer(e) && g.pressed('action')) { e.setState('running'); g.sound('teleport', e.x, e.y); e.aistate = 1; }
   } else if (!e.nextPicture()) {
     const dest = link0(e);
-    g.player.x = dest.x; g.player.y = dest.y; g.player.vx = 0; g.player.vy = 0;
+    g.teleportPlayer(dest.x, dest.y, 16);
     e.setState('stopped'); e.aistate = 0;
   }
   return true;
@@ -508,7 +508,7 @@ function tpDoor(e, g) {
   if (e.xvel >= 0 && e.xvel < 64) g.ambient = e.xvel;
   if (e.a.opening) e.frame = Math.min(frames - 1, e.frame + 1); else e.frame = Math.max(0, e.frame - 1);
   if (other && !g.tpLatch && g.pressed('action') && Math.abs(p.x - e.x) < 20 && Math.abs(p.y - e.y) < 30) {
-    p.x = other.x; p.y = other.y; p.vx = 0; p.vy = 0;
+    g.teleportPlayer(other.x, other.y);
     g.tpLatch = true;
     g.sound('teleport', e.x, e.y);
   }

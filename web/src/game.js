@@ -346,6 +346,26 @@ export class Game {
     e.hw = 0;
   }
 
+  teleportPlayer(x, y, yOffset = 0) {
+    const p = this.player;
+    let sx = x, sy = y - yOffset;
+    if (this.boxHits(sx, sy, HALF_W, BODY_H, null)) {
+      let found = false;
+      for (let d = 3; d <= VIEW_W * 2 && !found; d += 3) {
+        for (const dx of [-d, d]) {
+          if (!this.boxHits(x + dx, sy, HALF_W, BODY_H, null)) { sx = x + dx; found = true; break; }
+        }
+      }
+      for (let d = 3; d <= VIEW_H && !found; d += 3) {
+        for (const dy of [-d, d]) {
+          if (!this.boxHits(x, sy + dy, HALF_W, BODY_H, null)) { sy += dy; found = true; break; }
+        }
+      }
+      if (found) this.toast('Teleporter landing adjusted to clear the wall');
+    }
+    p.x = sx; p.y = sy; p.vx = 0; p.vy = 0; p.ground = false;
+  }
+
   damage(e, amount) {
     if (/BOMB$/.test(e.type)) { e.a.hit = true; return; }
     if (e.type === 'SWITCH_BALL') {
