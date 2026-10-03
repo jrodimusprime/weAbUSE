@@ -1,0 +1,566 @@
+// Game loop, level state, player, collision and rendering.
+import { Renderer } from './renderer.js';
+import { Assets } from './assets.js';
+import { loadLevel } from './level.js';
+import { Entity } from './entity.js';
+import { behaviors, LOGIC_AI, SOLID_AI, isHiddenInPlay } from './behaviors.js';
+import { WEAPONS, WEAPON_ORDER, firePlayer, updateProjectiles, drawProjectiles } from './weapons.js';
+import { Audio } from './audio.js';
+
+const VIEW_W = 320;
+const VIEW_H = 200;
+const STEP = 1 / 60;
+const TICK = 1 / 15; // original game logic rate
+
+// Original physics constants are per 15 Hz tick; converted to px/s here.
+const RUN_SPEED = 120;
+const JUMP_VEL = 225;
+const GRAVITY = 675;
+const MAX_FALL = 420;
+const HALF_W = 6;
+const BODY_H = 36;
+const CLIMB_SPEED = 90;
+
+const EXTRA_DEFS = [
+  'DARNEL', 'GRENADE', 'ROCKET', 'FIREBOMB', 'ANT_ROOF', 'HIDDEN_ANT',
+  'EXPLODE1', 'EXPLODE2', 'EXPLODE3', 'EXPLODE4', 'EXPLODE5', 'EXPLODE6', 'EXPLODE7', 'EXPLODE8',
+  'CLOUD', 'SMALL_DARK_CLOUD', 'SMALL_LIGHT_CLOUD',
+  ...WEAPON_ORDER.map((w) => WEAPONS[w].top),
+];
+const MIDDLE_DRAW = new Set(['exp_draw', 'middle_draw']);
+
+export class Game {
+  constructor(canvas, hud) {
+    this.r = new Renderer(canvas, VIEW_W, VIEW_H);
+    this.assets = new Assets();
+    this.audio = new Audio();
+    this.hud = hud;
+    this.keys = new Set();
+    this.mouse = null;
+    this.mouseDown = false;
+    this.god = false;
+    this.level = null;
+    this.entities = [];
+    this.solids = [];
+    this.ladders = [];
+    this.projs = [];
+    this.player = null;
+    this.cam = { x: 0, y: 0 };
+    this.acc = 0;
+    this.tickAcc = 0;
+    this.rng = 12345;
+
+    addEventListener('keydown', (e) => {
+      this.keys.add(e.code);
+      if (e.code.startsWith('Arrow') || e.code === 'Space') e.preventDefault();
+      if (e.code === 'KeyG' && !e.repeat) this.setGod(!this.god);
+      const n = e.code.startsWith('Digit') ? parseInt(e.code.slice(5), 10) : 0;
+      if (n >= 1 && n <= WEAPON_ORDER.length) this.selectWeapon(WEAPON_ORDER[n - 1]);
+    });
+    addEventListener('keyup', (e) => this.keys.delete(e.code));
+    addEventListener('blur', () => this.keys.clear());
+    canvas.addEventListener('mousemove', (e) => {
+      const b = canvas.getBoundingClientRect();
+      this.mouse = { x: ((e.clientX - b.left) / b.width) * VIEW_W, y: ((e.clientY - b.top) / b.height) * VIEW_H };
+    });
+    canvas.addEventListener('mousedown', (e) => { if (e.button === 0) this.mouseDown = true; });
+    addEventListener('mouseup', () => { this.mouseDown = false; });
+    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+    canvas.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      this.cycleWeapon(e.deltaY > 0 ? 1 : -1);
+    }, { passive: false });
+  }
+
+  setGod(on) {
+    this.god = on;
+    this.onGod?.(on);
+  }
+
+  async init() {
+    await this.assets.init();
+    this.r.setPalette(this.assets.palette);
+    const t = this.assets.foreTile(1) || this.assets.foreTile(0);
+    this.tw = t.w;
+    this.th = t.h;
+    const b = this.assets.backTile(0) || [...this.assets.back.keys()].map((k) => this.assets.backTile(k))[0];
+    this.bw = b?.w || this.tw;
+    this.bh = b?.h || this.th;
+    const nearest = (r, g, bl) => {
+      let best = 0, bd = Infinity;
+      const pal = this.assets.palette;
+      for (let i = 1; i < 256; i++) {
+        const d = (pal[i * 4] - r) ** 2 + (pal[i * 4 + 1] - g) ** 2 + (pal[i * 4 + 2] - bl) ** 2;
+        if (d < bd) { bd = d; best = i; }
+      }
+      return best;
+    };
+    this.colors = {
+      white: nearest(255, 255, 255), yellow: nearest(255, 230, 90), cyan: nearest(120, 220, 255),
+      green: nearest(90, 255, 90), orange: nearest(255, 140, 40),
+    };
+    this.player = {
+      x: 0, y: 0, vx: 0, vy: 0, dir: 1, ground: false, anim: 0, state: 'stopped', aim: 0, aimAngle: 0,
+      hp: 100, maxhp: 100, weapon: 'MGUN', ammo: { MGUN: 100 }, owned: new Set(['MGUN']), cooldown: 0,
+      dead: false, deadTime: 0, climbing: false,
+    };
+  }
+
+  rand(n) {
+    this.rng = (this.rng * 1103515245 + 12345) & 0x7fffffff;
+    return (this.rng >> 8) % n;
+  }
+
+  sound(name, x, y) {
+    const p = this.player;
+    this.audio.play(name, x === undefined ? null : { dx: x - p.x, dy: (y ?? p.y) - p.y });
+  }
+
+  async start(file) {
+    const level = await loadLevel(file);
+    const types = new Set(level.objects.map((o) => o.type));
+    EXTRA_DEFS.forEach((t) => types.add(t));
+    await Promise.all([...types].map((t) => this.assets.preloadDef(this.assets.defs.get(t))));
+    this.r.resetAtlas();
+    this.level = level;
+    this.projs = [];
+    this.transitioning = false;
+    this.onLevel?.(level.name);
+
+    const byIndex = level.objects.map((o) => {
+      const def = this.assets.defs.get(o.type);
+      if (!def || o.type === 'START') return null;
+      const e = new Entity(def, o);
+      e.lv = o.lv || {};
+      e.shootable = def.flags.get('hurtable') === 'T' || /BOMB$/.test(o.type);
+      e.logic = LOGIC_AI.has(e.ai);
+      return e;
+    });
+    level.objects.forEach((o, i) => { if (byIndex[i]) byIndex[i].links = o.links.map((j) => byIndex[j]).filter(Boolean); });
+    this.entities = byIndex.filter(Boolean);
+    this.ladders = this.entities
+      .filter((e) => e.ai === 'latter_ai' && e.links.length)
+      .map((e) => ({ x0: e.x, y0: e.y, x1: e.links[0].x, y1: e.links[0].y }));
+    this.refreshSolids();
+
+    const start = level.objects.find((o) => o.type === 'START');
+    this.startPos = { x: start ? start.x : 100, y: start ? start.y : 100 };
+    this.respawn();
+    this.cam.x = this.player.x - VIEW_W / 2;
+    this.cam.y = this.player.y - VIEW_H / 2;
+    if (!this.running) { this.running = true; this.last = performance.now(); requestAnimationFrame((t) => this.frame(t)); }
+  }
+
+  nextLevel(n) {
+    if (!(n >= 0 && n <= 21)) return;
+    this.transitioning = true;
+    this.start(`level${String(n).padStart(2, '0')}.spe`);
+  }
+
+  respawn() {
+    const p = this.player;
+    Object.assign(p, {
+      x: this.startPos.x, y: this.startPos.y, vx: 0, vy: 0, hp: p.maxhp, dead: false, deadTime: 0, climbing: false, cooldown: 0,
+    });
+  }
+
+  frame(now) {
+    const dt = Math.min(0.1, (now - this.last) / 1000);
+    this.last = now;
+    this.acc += dt;
+    while (this.acc >= STEP) { this.update(STEP); this.acc -= STEP; }
+    this.render();
+    this.updateHud();
+    requestAnimationFrame((t) => this.frame(t));
+  }
+
+  // ---- input helpers ----
+  pressed(name) {
+    const k = this.keys;
+    if (name === 'action') return k.has('ArrowDown') || k.has('KeyS') || k.has('KeyE');
+    return false;
+  }
+
+  selectWeapon(w) {
+    if (this.player.owned.has(w)) this.player.weapon = w;
+  }
+
+  cycleWeapon(d) {
+    const owned = WEAPON_ORDER.filter((w) => this.player.owned.has(w));
+    const i = owned.indexOf(this.player.weapon);
+    this.player.weapon = owned[(i + d + owned.length) % owned.length];
+  }
+
+  // ---- collision ----
+  tileSolid(px, py) {
+    const lv = this.level;
+    if (px < 0 || px >= lv.fgW * this.tw) return true;
+    if (py < 0 || py >= lv.fgH * this.th) return false;
+    const tx = Math.floor(px / this.tw);
+    const ty = Math.floor(py / this.th);
+    const tile = this.assets.foreTile(lv.fgmap[ty * lv.fgW + tx]);
+    if (!tile || !tile.mask) return false;
+    return tile.mask[(py - ty * this.th) * tile.w + (px - tx * this.tw)] === 1;
+  }
+
+  solidAt(px, py) {
+    px = Math.floor(px); py = Math.floor(py);
+    if (this.tileSolid(px, py)) return true;
+    for (const s of this.solids) if (px >= s.x0 && px <= s.x1 && py >= s.y0 && py <= s.y1) return true;
+    return false;
+  }
+
+  boxHits(x, y, hw, bh, ignore) {
+    const l = Math.floor(x - hw), r = Math.floor(x + hw), top = Math.floor(y - bh), yy = Math.floor(y);
+    for (const s of this.solids) {
+      if (s.e !== ignore && r >= s.x0 && l <= s.x1 && yy - 1 >= s.y0 && top <= s.y1) return true;
+    }
+    for (let py = top; py < yy; py += 4) if (this.tileSolid(l, py) || this.tileSolid(r, py)) return true;
+    if (this.tileSolid(l, yy - 1) || this.tileSolid(r, yy - 1)) return true;
+    for (let px = l; px <= r; px += 3) if (this.tileSolid(px, top) || this.tileSolid(px, yy - 1)) return true;
+    return this.tileSolid(r, top);
+  }
+
+  sees(x1, y1, x2, y2) {
+    const n = Math.max(1, Math.ceil(Math.hypot(x2 - x1, y2 - y1) / 3));
+    for (let i = 1; i < n; i++) {
+      if (this.tileSolid(Math.floor(x1 + ((x2 - x1) * i) / n), Math.floor(y1 + ((y2 - y1) * i) / n))) return false;
+    }
+    return true;
+  }
+
+  box(e) {
+    if (!e.hw) {
+      const img = this.spriteOf(e);
+      e.hw = Math.max(4, Math.floor((img?.w || 16) * 0.35));
+      e.bh = Math.max(6, (img?.h || 20) - 3);
+    }
+    return e;
+  }
+
+  moveEntity(e, dx, dy) {
+    const out = { blockedX: false, down: false, up: false };
+    const { hw, bh } = this.box(e);
+    const nx = Math.ceil(Math.abs(dx)), sx = Math.sign(dx);
+    for (let i = 0; i < nx; i++) {
+      const x = e.x + sx * Math.min(1, Math.abs(dx) - i);
+      if (!this.boxHits(x, e.y, hw, bh, e)) { e.x = x; continue; }
+      let up = 1;
+      while (up <= 5 && this.boxHits(x, e.y - up, hw, bh, e)) up++;
+      if (up <= 5) { e.x = x; e.y -= up; } else { out.blockedX = true; break; }
+    }
+    const ny = Math.ceil(Math.abs(dy)), sy = Math.sign(dy);
+    for (let i = 0; i < ny; i++) {
+      const y = e.y + sy * Math.min(1, Math.abs(dy) - i);
+      if (!this.boxHits(e.x, y, hw, bh, e)) { e.y = y; continue; }
+      if (sy > 0) out.down = true; else out.up = true;
+      break;
+    }
+    return out;
+  }
+
+  // ---- entity helpers ----
+  spriteOf(e) {
+    const f = e.frames();
+    if (!f || !e.def.file) return null;
+    return this.assets.sprite(e.def.file, f[e.frame % f.length]);
+  }
+
+  rectOf(e) {
+    const img = this.spriteOf(e);
+    if (!img) return null;
+    const x0 = Math.round(e.x) - (e.dir < 0 ? img.w - img.xcfg - 1 : img.xcfg);
+    const y0 = Math.round(e.y) - img.h + 1;
+    return { x0, y0, x1: x0 + img.w - 1, y1: y0 + img.h - 1 };
+  }
+
+  playerRect() {
+    const p = this.player;
+    return { x0: p.x - HALF_W, x1: p.x + HALF_W, y0: p.y - BODY_H, y1: p.y };
+  }
+
+  touchesPlayer(e) {
+    let r;
+    if (e.shootable && e.hw) r = { x0: e.x - e.hw, x1: e.x + e.hw, y0: e.y - e.bh, y1: e.y };
+    else r = this.rectOf(e);
+    if (!r) return false;
+    const p = this.playerRect();
+    return r.x0 <= p.x1 && r.x1 >= p.x0 && r.y0 <= p.y1 && r.y1 >= p.y0;
+  }
+
+  refreshSolids() {
+    this.solids = [];
+    for (const e of this.entities) {
+      if (e.dead || !SOLID_AI.has(e.ai) || e.state === 'blocking') continue;
+      const r = this.rectOf(e);
+      if (r) this.solids.push({ ...r, e });
+    }
+  }
+
+  spawn(typeName, x, y) {
+    const def = this.assets.defs.get(typeName);
+    if (!def) return null;
+    const e = new Entity(def, { x, y });
+    e.logic = false;
+    this.entities.push(e);
+    return e;
+  }
+
+  effect(typeName, x, y) { return this.spawn(typeName, x, y); }
+
+  changeType(e, name) {
+    const def = this.assets.defs.get(name);
+    if (!def) return;
+    e.def = def;
+    e.type = name;
+    e.ai = def.funs.get('ai_fun');
+    e.hp = def.abilities.get('start_hp') ?? e.hp;
+    e.setState('stopped');
+    e.hw = 0;
+  }
+
+  damage(e, amount) {
+    if (/BOMB$/.test(e.type)) { e.a.hit = true; return; }
+    e.hp -= amount;
+    if (e.hp > 0 && this.rand(3) === 0) {
+      if (e.def.states.has('flinch_up') && !/^(HIDDEN|TRACK|SPRAY)/.test(e.type)) e.setState('flinch_up');
+    }
+  }
+
+  explode(x, y, radius, dmg, fromPlayer, noEntities = false) {
+    this.effect('EXPLODE1', x, y);
+    this.effect('EXPLODE3', x + this.rand(10) - 5, y + this.rand(10) - 5);
+    this.sound('explode', x, y);
+    if (!noEntities) {
+      for (const e of this.entities) {
+        if (e.dead || !e.shootable) continue;
+        const d = Math.hypot(e.x - x, e.y - 10 - y);
+        if (d < radius) this.damage(e, Math.max(1, dmg * (1 - (d / radius) * 0.7)));
+      }
+    }
+    const p = this.player;
+    const d = Math.hypot(p.x - x, p.y - 18 - y);
+    if (d < radius) {
+      this.hurtPlayer(Math.max(1, dmg * (1 - d / radius) * (fromPlayer ? 0.5 : 1)));
+      p.vx += Math.sign(p.x - x || 1) * (1 - d / radius) * 180;
+      p.vy -= (1 - d / radius) * 120;
+    }
+  }
+
+  hurtPlayer(amount) {
+    const p = this.player;
+    if (this.god || p.dead) return;
+    p.hp -= amount;
+    if (p.hp <= 0) { p.hp = 0; p.dead = true; p.deadTime = 2; p.vx = 0; this.sound('die'); }
+  }
+
+  giveHealth(n) {
+    const p = this.player;
+    if (p.hp >= p.maxhp || p.dead) return false;
+    p.hp = Math.min(p.maxhp, p.hp + n);
+    return true;
+  }
+
+  giveAmmo(weapon, n) {
+    const p = this.player;
+    p.ammo[weapon] = Math.min(999, (p.ammo[weapon] || 0) + n);
+    if (!p.owned.has(weapon)) { p.owned.add(weapon); p.weapon = weapon; }
+  }
+
+  // ---- simulation ----
+  update(dt) {
+    const p = this.player;
+    if (!p || !this.level) return;
+    this.updatePlayer(dt);
+    this.tickAcc += dt;
+    while (this.tickAcc >= TICK) { this.tickAcc -= TICK; this.tick(); }
+  }
+
+  tick() {
+    const p = this.player;
+    for (const e of this.entities) { e.px = e.x; e.py = e.y; }
+    for (const e of this.entities.slice()) {
+      if (e.dead || !e.ai) continue;
+      const fn = behaviors[e.ai];
+      if (!fn) continue;
+      if (!e.logic && (Math.abs(e.x - p.x) > 640 || Math.abs(e.y - p.y) > 440)) continue;
+      e.stateTime++;
+      if (fn(e, this) === false) e.dead = true;
+    }
+    updateProjectiles(this);
+    this.entities = this.entities.filter((e) => !e.dead);
+    this.refreshSolids();
+  }
+
+  inLadder(p) {
+    return this.ladders.find((l) => p.x >= l.x0 && p.x <= l.x1 && p.y >= l.y0 && p.y <= l.y1);
+  }
+
+  updatePlayer(dt) {
+    const p = this.player;
+    const k = this.keys;
+    p.cooldown = Math.max(0, p.cooldown - dt);
+
+    if (p.dead) {
+      p.deadTime -= dt;
+      p.vy = Math.min(MAX_FALL, p.vy + GRAVITY * dt);
+      this.moveY(p, p.vy * dt);
+      if (p.deadTime <= 0) this.respawn();
+      return;
+    }
+
+    const left = k.has('ArrowLeft') || k.has('KeyA');
+    const right = k.has('ArrowRight') || k.has('KeyD');
+    const up = k.has('ArrowUp') || k.has('KeyW');
+    const down = k.has('ArrowDown') || k.has('KeyS');
+    const ladder = this.inLadder(p);
+    const jump = k.has('Space') || k.has('KeyZ') || (up && !ladder);
+
+    if (ladder && (up || down) && !p.climbing) p.climbing = true;
+    if (!ladder) p.climbing = false;
+
+    if (p.climbing) {
+      if (jump) { p.climbing = false; p.vy = -JUMP_VEL; } else {
+        p.vx = 0; p.vy = 0;
+        p.x += (((ladder.x0 + ladder.x1) / 2) - p.x) * Math.min(1, dt * 10);
+        const dy = ((down ? 1 : 0) - (up ? 1 : 0)) * CLIMB_SPEED * dt;
+        const ny = p.y + dy;
+        if (!this.boxHits(p.x, ny, HALF_W, BODY_H, null)) p.y = ny;
+        p.anim += Math.abs(dy) * 1.2;
+        p.state = 'climbing';
+      }
+    }
+
+    if (!p.climbing) {
+      const target = (right ? 1 : 0) - (left ? 1 : 0);
+      const accel = p.ground ? 1400 : 700;
+      if (target) { p.dir = target; p.vx += target * accel * dt; p.vx = Math.max(-RUN_SPEED, Math.min(RUN_SPEED, p.vx)); }
+      else p.vx -= Math.sign(p.vx) * Math.min(Math.abs(p.vx), 1800 * dt);
+
+      if (jump && p.ground) { p.vy = -JUMP_VEL; p.ground = false; }
+      p.vy = Math.min(MAX_FALL, p.vy + GRAVITY * dt);
+
+      const wasGround = p.ground;
+      this.moveX(p, p.vx * dt);
+      if (wasGround && p.vy >= 0) {
+        let d = 0;
+        while (d < 6 && !this.boxHits(p.x, p.y + 1, HALF_W, BODY_H, null) && !this.boxHits(p.x, p.y, HALF_W, BODY_H, null)) { p.y++; d++; }
+      }
+      this.moveY(p, p.vy * dt);
+      if (p.y > this.level.fgH * this.th + 100) { p.y = this.startPos.y; p.x = this.startPos.x; p.vy = 0; }
+
+      p.anim += dt * (p.ground && Math.abs(p.vx) > 10 ? 15 * Math.abs(p.vx) / RUN_SPEED * 1.4 : 6);
+      p.state = !p.ground ? (p.vy < 0 ? 'run_jump' : 'run_jump_fall') : Math.abs(p.vx) > 10 ? 'running' : 'stopped';
+    }
+
+    if (this.mouse) {
+      // 24 upper-body frames, 15 degrees apart, counter-clockwise from facing right
+      const ang = Math.atan2(p.y - BODY_H * 0.6 - this.cam.y - this.mouse.y, this.mouse.x - (p.x - this.cam.x));
+      p.aimAngle = ang;
+      p.dir = this.mouse.x >= p.x - this.cam.x ? 1 : -1;
+    } else p.aimAngle = p.dir > 0 ? 0 : Math.PI;
+    p.aim = Math.round(((p.aimAngle + 2 * Math.PI) % (2 * Math.PI)) / (Math.PI / 12)) % 24;
+
+    if (this.mouseDown || k.has('KeyF') || k.has('ControlLeft') || k.has('ControlRight')) firePlayer(this);
+
+    const tx = p.x - VIEW_W / 2 + p.dir * 24;
+    const ty = p.y - BODY_H / 2 - VIEW_H / 2;
+    this.cam.x += (tx - this.cam.x) * Math.min(1, dt * 6);
+    this.cam.y += (ty - this.cam.y) * Math.min(1, dt * 6);
+    this.cam.x = Math.max(0, Math.min(this.cam.x, this.level.fgW * this.tw - VIEW_W));
+    this.cam.y = Math.max(0, Math.min(this.cam.y, this.level.fgH * this.th - VIEW_H));
+  }
+
+  moveX(p, dx) {
+    const n = Math.ceil(Math.abs(dx));
+    const s = Math.sign(dx);
+    for (let i = 0; i < n; i++) {
+      const nx = p.x + s * Math.min(1, Math.abs(dx) - i);
+      if (!this.boxHits(nx, p.y, HALF_W, BODY_H, null)) { p.x = nx; continue; }
+      let up = 1;
+      while (up <= 8 && this.boxHits(nx, p.y - up, HALF_W, BODY_H, null)) up++;
+      if (up <= 8) { p.x = nx; p.y -= up; } else { p.vx = 0; break; }
+    }
+  }
+
+  moveY(p, dy) {
+    const n = Math.ceil(Math.abs(dy));
+    const s = Math.sign(dy);
+    p.ground = false;
+    for (let i = 0; i < n; i++) {
+      const ny = p.y + s * Math.min(1, Math.abs(dy) - i);
+      if (!this.boxHits(p.x, ny, HALF_W, BODY_H, null)) { p.y = ny; continue; }
+      if (s > 0) p.ground = true;
+      p.vy = 0;
+      break;
+    }
+  }
+
+  // ---- drawing ----
+  blit(def, stateName, frame, x, y, dir, middle = false) {
+    const frames = def.states.get(stateName) || def.states.get('stopped');
+    if (!frames || !def.file) return;
+    const img = this.assets.sprite(def.file, frames[Math.floor(frame) % frames.length]);
+    if (!img) return;
+    const ox = dir < 0 ? img.w - img.xcfg - 1 : img.xcfg;
+    const yy = middle ? y + img.h / 2 : y;
+    this.r.draw(img, Math.round(x - ox - this.cam.x), Math.round(yy - img.h + 1 - this.cam.y), { flip: dir < 0 });
+  }
+
+  render() {
+    const lv = this.level;
+    if (!lv) return;
+    const r = this.r;
+    const cx = Math.floor(this.cam.x), cy = Math.floor(this.cam.y);
+    const alpha = Math.min(1, this.tickAcc / TICK);
+    r.begin();
+
+    if (lv.bgW) {
+      const bx = Math.floor(cx * lv.bgRate.xmul / lv.bgRate.xdiv);
+      const by = Math.floor(cy * lv.bgRate.ymul / lv.bgRate.ydiv);
+      const t0x = Math.floor(bx / this.bw), t0y = Math.floor(by / this.bh);
+      for (let ty = t0y; ty * this.bh - by < VIEW_H; ty++) {
+        for (let tx = t0x; tx * this.bw - bx < VIEW_W; tx++) {
+          const id = lv.bgmap[(((ty % lv.bgH) + lv.bgH) % lv.bgH) * lv.bgW + (((tx % lv.bgW) + lv.bgW) % lv.bgW)];
+          const t = this.assets.backTile(id);
+          if (t) r.draw(t, tx * this.bw - bx, ty * this.bh - by, { opaque: true });
+        }
+      }
+    }
+
+    const x0 = Math.floor(cx / this.tw), y0 = Math.floor(cy / this.th);
+    for (let ty = y0; ty <= y0 + Math.ceil(VIEW_H / this.th) && ty < lv.fgH; ty++) {
+      for (let tx = x0; tx <= x0 + Math.ceil(VIEW_W / this.tw) && tx < lv.fgW; tx++) {
+        const t = this.assets.foreTile(lv.fgmap[ty * lv.fgW + tx]);
+        if (t) r.draw(t, tx * this.tw - cx, ty * this.th - cy);
+      }
+    }
+
+    const fx = [];
+    for (const e of this.entities) {
+      if (e.dead || e.hidden) continue;
+      const x = e.px + (e.x - e.px) * alpha, y = e.py + (e.y - e.py) * alpha;
+      if (x < cx - 160 || x > cx + VIEW_W + 160 || y < cy - 80 || y > cy + VIEW_H + 200) continue;
+      if (isHiddenInPlay(e.def)) continue;
+      if (MIDDLE_DRAW.has(e.def.funs.get('draw_fun'))) { fx.push([e, x, y]); continue; }
+      this.blit(e.def, e.state, e.frame, x, y, e.dir);
+    }
+
+    const p = this.player;
+    const body = this.assets.defs.get('DARNEL');
+    if (body) this.blit(body, p.dead ? 'dead' : p.state, p.anim, p.x, p.y, p.dir);
+    const top = !p.dead && this.assets.defs.get(WEAPONS[p.weapon]?.top);
+    if (top && !p.climbing) this.blit(top, 'stopped', p.aim, p.dir > 0 ? p.x : p.x + 2, p.y, 1);
+
+    drawProjectiles(this, alpha);
+    for (const [e, x, y] of fx) this.blit(e.def, e.state, e.frame, x, y, e.dir, true);
+    r.flush();
+  }
+
+  updateHud() {
+    const p = this.player;
+    const w = WEAPONS[p.weapon];
+    const owned = WEAPON_ORDER.map((n, i) => `${p.owned.has(n) ? (n === p.weapon ? '[' : ' ') : '-'}${i + 1}${n === p.weapon ? ']' : ' '}`).join('');
+    this.hud.textContent = `${this.level.name}  HP ${Math.ceil(p.hp)}  ${w.label} ${p.ammo[p.weapon] || 0}  ${owned}${this.god ? '  GOD' : ''}`;
+  }
+}
