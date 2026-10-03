@@ -112,7 +112,7 @@ export class Game {
     this.player = {
       x: 0, y: 0, vx: 0, vy: 0, dir: 1, ground: false, anim: 0, state: 'stopped', aim: 0, aimAngle: 0,
       hp: 100, maxhp: 100, weapon: 'MGUN', ammo: { MGUN: 100 }, owned: new Set(['MGUN']), cooldown: 0,
-      dead: false, deadTime: 0, climbing: false,
+      dead: false, deadTime: 0, climbing: false, ladderExit: null,
     };
   }
 
@@ -173,8 +173,25 @@ export class Game {
 
   respawn() {
     const p = this.player;
+    let x = this.startPos.x, y = this.startPos.y;
+    if (this.boxHits(x, y, HALF_W, BODY_H, null)) {
+      let found = false;
+      for (let d = 1; d <= 120; d++) {
+        if (!this.boxHits(x, y + d, HALF_W, BODY_H, null)) { y += d; found = true; break; }
+      }
+      for (let dx = 3; dx <= 240 && !found; dx += 3) {
+        for (const offset of [-dx, dx]) {
+          for (let dy = 0; dy <= 120; dy += 3) {
+            if (!this.boxHits(x + offset, y + dy, HALF_W, BODY_H, null)) {
+              x += offset; y += dy; found = true; break;
+            }
+          }
+          if (found) break;
+        }
+      }
+    }
     Object.assign(p, {
-      x: this.startPos.x, y: this.startPos.y, vx: 0, vy: 0, hp: p.maxhp, dead: false, deadTime: 0, climbing: false, cooldown: 0,
+      x, y, vx: 0, vy: 0, hp: p.maxhp, dead: false, deadTime: 0, climbing: false, ladderExit: null, cooldown: 0,
     });
   }
 
@@ -497,7 +514,13 @@ export class Game {
   }
 
   inLadder(p) {
-    return this.ladders.find((l) => p.x >= l.x0 && p.x <= l.x1 && p.y >= l.y0 && p.y <= l.y1);
+    if (p.ladderExit) {
+      const l = p.ladderExit;
+      if (p.x < l.x0 - 10 || p.x > l.x1 + 10 || p.y < l.y0 - 10 || p.y > l.y1 + 10 || this.keys.has('ArrowDown') || this.keys.has('KeyS')) {
+        p.ladderExit = null;
+      } else return null;
+    }
+    return this.ladders.find((l) => p.x >= l.x0 - 5 && p.x <= l.x1 + 5 && p.y >= l.y0 && p.y <= l.y1);
   }
 
   updatePlayer(dt) {
@@ -518,7 +541,7 @@ export class Game {
     const up = k.has('ArrowUp') || k.has('KeyW');
     const down = k.has('ArrowDown') || k.has('KeyS');
     const ladder = this.inLadder(p);
-    const jump = k.has('Space') || k.has('KeyZ') || (up && !ladder);
+    const jump = k.has('Space') || k.has('KeyZ') || (up && !ladder && !p.ladderExit);
 
     if (ladder && (up || down) && !p.climbing) p.climbing = true;
     if (!ladder) p.climbing = false;
@@ -528,10 +551,17 @@ export class Game {
         p.vx = 0; p.vy = 0;
         p.x += (((ladder.x0 + ladder.x1) / 2) - p.x) * Math.min(1, dt * 10);
         const dy = ((down ? 1 : 0) - (up ? 1 : 0)) * CLIMB_SPEED * dt;
-        const ny = p.y + dy;
-        if (!this.boxHits(p.x, ny, HALF_W, BODY_H, null)) p.y = ny;
-        p.anim += Math.abs(dy) * 1.2;
-        p.state = 'climbing';
+        if (up && p.y - ladder.y0 < 32) {
+          p.y = ladder.y0;
+          p.vy = 0;
+          p.climbing = false;
+          p.ladderExit = ladder;
+          p.state = 'climb_off';
+        } else {
+          p.y += dy;
+          p.anim += Math.abs(dy) * 1.2;
+          p.state = 'climbing';
+        }
       }
     }
 
