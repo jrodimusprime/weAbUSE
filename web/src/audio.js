@@ -21,7 +21,7 @@ export class Audio {
 
   async load(name) {
     if (!this.buffers.has(name)) {
-      this.buffers.set(name, fetch(`${DATA}sfx/${FILES[name]}.wav`)
+      this.buffers.set(name, fetch(`${DATA}sfx/${FILES[name] ?? name}.wav`)
         .then((r) => r.arrayBuffer())
         .then((b) => this.ctx.decodeAudioData(b))
         .catch(() => null));
@@ -30,8 +30,8 @@ export class Audio {
   }
 
   // `at` is the source position relative to the listener, or null for non-positional sounds.
-  async play(name, at) {
-    if (!this.ctx || this.ctx.state !== 'running' || !FILES[name]) return;
+  async play(name, at, volume = 1) {
+    if (!this.ctx || this.ctx.state !== 'running') return;
     const buf = await this.load(name);
     if (!buf) return;
     const dist = at ? Math.hypot(at.dx, at.dy) : 0;
@@ -40,7 +40,7 @@ export class Audio {
     const src = this.ctx.createBufferSource();
     src.buffer = buf;
     const gain = this.ctx.createGain();
-    gain.gain.value = vol * 0.6;
+    gain.gain.value = vol * 0.6 * volume;
     const pan = this.ctx.createStereoPanner();
     pan.pan.value = at ? Math.max(-1, Math.min(1, at.dx / 300)) : 0;
     src.connect(gain).connect(pan).connect(this.ctx.destination);

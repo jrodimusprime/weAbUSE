@@ -1,5 +1,6 @@
 // WebGL renderer: 8-bit paletted images live in one index atlas; the fragment
 // shader looks each index up in a 256-entry palette texture.
+import { LIGHT_W, LIGHT_H } from './lighting.js';
 
 const VERT = `
 attribute vec2 a_pos;
@@ -9,11 +10,13 @@ uniform vec2 u_view;
 uniform vec2 u_atlas;
 varying vec2 v_uv;
 varying float v_opaque;
+varying vec2 v_px;
 void main() {
   vec2 p = a_pos / u_view * 2.0 - 1.0;
   gl_Position = vec4(p.x, -p.y, 0.0, 1.0);
   v_uv = a_uv / u_atlas;
   v_opaque = a_opaque;
+  v_px = a_pos;
 }`;
 
 const FRAG = `
@@ -21,13 +24,21 @@ precision highp float;
 uniform sampler2D u_tex;
 uniform sampler2D u_pal;
 uniform float u_bright;
+uniform sampler2D u_light;
+uniform float u_lit;
+uniform vec2 u_lightSize;
 varying vec2 v_uv;
 varying float v_opaque;
+varying vec2 v_px;
 void main() {
   float idx = floor(texture2D(u_tex, v_uv).r * 255.0 + 0.5);
   if (idx < 0.5 && v_opaque < 0.5) discard;
-  vec3 c = texture2D(u_pal, vec2((idx + 0.5) / 256.0, 0.5)).rgb;
-  gl_FragColor = vec4(c * u_bright, 1.0);
+  vec3 c = texture2D(u_pal, vec2((idx + 0.5) / 256.0, 0.5)).rgb * 255.0;
+  if (u_lit > 0.5) {
+    float lv = texture2D(u_light, (v_px / 4.0 + 0.5) / u_lightSize).r * 255.0;
+    c = max(c - (63.0 - lv), 0.0);
+  }
+  gl_FragColor = vec4(c / 255.0 * u_bright, 1.0);
 }`;
 
 const ATLAS = 4096;
@@ -56,6 +67,10 @@ export class Renderer {
     gl.uniform1i(gl.getUniformLocation(this.prog, 'u_pal'), 1);
     this.brightLoc = gl.getUniformLocation(this.prog, 'u_bright');
     gl.uniform1f(this.brightLoc, 1);
+    gl.uniform1i(gl.getUniformLocation(this.prog, 'u_light'), 2);
+    gl.uniform2f(gl.getUniformLocation(this.prog, 'u_lightSize'), LIGHT_W, LIGHT_H);
+    this.litLoc = gl.getUniformLocation(this.prog, 'u_lit');
+    gl.uniform1f(this.litLoc, 0);
 
     gl.activeTexture(gl.TEXTURE0);
     this.atlas = gl.createTexture();
@@ -69,6 +84,15 @@ export class Renderer {
     gl.bindTexture(gl.TEXTURE_2D, this.palTex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 256, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(1024));
     this.nearest();
+
+    gl.activeTexture(gl.TEXTURE2);
+    this.lightTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, this.lightTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, LIGHT_W, LIGHT_H, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, new Uint8Array(LIGHT_W * LIGHT_H));
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
 
     this.buf = gl.createBuffer();
     this.data = new Float32Array(MAX_QUADS * 6 * 5);
@@ -108,6 +132,18 @@ export class Renderer {
   }
 
   setBrightness(b) { this.flush(); this.gl.uniform1f(this.brightLoc, b); }
+
+  setLightMap(data) {
+    const gl = this.gl;
+    gl.activeTexture(gl.TEXTURE2);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, LIGHT_W, LIGHT_H, gl.LUMINANCE, gl.UNSIGNED_BYTE, data);
+  }
+
+  // Draws issued after this call are darkened by the light map (or not).
+  setLit(on) {
+    this.flush();
+    this.gl.uniform1f(this.litLoc, on ? 1 : 0);
+  }
 
   // Forget packed images; callers must re-request them via draw().
   resetAtlas() {

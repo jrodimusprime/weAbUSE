@@ -4,7 +4,7 @@ import { pickupFor, enemyShot } from './weapons.js';
 
 export const LOGIC_AI = new Set([
   'delay_ai', 'or_ai', 'and_ai', 'xor_ai', 'not_ai', 'pulse_ai', 'sensor_ai', 'switcher_ai', 'switch_once_ai',
-  'sdoor_ai', 'strap_door_ai', 'indicator_ai', 'hwall_ai', 'big_wall_ai', 'switch_delay_ai',
+  'sdoor_ai', 'strap_door_ai', 'indicator_ai', 'hwall_ai', 'big_wall_ai', 'switch_delay_ai', 'switch_dim_ai', 'switch_mover_ai',
 ]);
 
 // Door-like objects block the player until they reach their fully open ('blocking') state.
@@ -375,6 +375,107 @@ function effect(e) {
   return e.nextPicture();
 }
 
+const HINTS = [
+  'Aim gun with mouse, fire with left mouse button',
+  'Collect ammo to increase firing speed',
+  'Press the down key to activate objects. This is a switch.',
+  'This console saves the state of the game, press down',
+  'Press down to activate platform',
+  'Hold down the right mouse button to use special powers',
+  'Use the CTRL & INS keys (or 1-7, or the mouse wheel) to select weapons',
+  'Press the up key to climb ladders',
+  'Press the down key to start!',
+  'Shoot hidden walls to destroy them',
+  'Shoot switch ball to activate',
+  'Press down to teleport',
+];
+const HINT_VOICE = [
+  'aimsave', 'ammosave', 'switch_1', 'savesave', 'platfo_1', 'poweru_1', 'weapon_1', 'ladder_1', 'starts_1', 'wallss_1', 'switch_2', 'telepo_1',
+];
+
+function trainMessage(e, g) {
+  if (e.aistate === 0) {
+    if (activated(e)) { g.showHelp(HINTS[e.aitype] ?? '', HINT_VOICE[e.aitype]); e.aistate = 1; }
+    return true;
+  }
+  if (e.aistate === 100) return false;
+  g.showHelp(HINTS[e.aitype] ?? '', HINT_VOICE[e.aitype]);
+  e.aistate++;
+  return true;
+}
+
+const AMBIENT = [
+  'ambtech1', 'ambtech2', 'ambtech3', 'ambcave1', 'ambcave2', 'ambcave3', 'ambcave4', 'ambfrst2', 'scream02', 'scream03',
+  'scream08', 'adie03', 'amb11', 'amb13', 'amb16', 'amb07', 'amb10',
+];
+
+function ambientSound(e, g) {
+  if (!activated(e)) { e.aistate = 0; return true; }
+  if (e.aistate === 0) {
+    g.sound(AMBIENT[e.aitype] ?? AMBIENT[0], e.x, e.y, (e.yvel || 127) / 127);
+    e.aistate = e.xvel + g.rand(e.xacel + 1);
+    return e.xvel > 0;
+  }
+  e.aistate--;
+  return true;
+}
+
+// Slowly changes the radius of the linked light (or the ambient level) in response to a switch.
+function dimmer(e, g) {
+  const sw = link0(e);
+  const light = e.lights[0];
+  const getV = () => (light ? light.outer : g.ambient);
+  const setV = (v) => {
+    if (light) { if (v > light.inner) light.outer = v; } else if (v >= 0 && v < 64) g.ambient = v;
+  };
+  switch (e.aistate) {
+    case 0: if (sw && sw.aistate !== 0) goState(e, 1); break;
+    case 1: if (e.stateTime > e.yvel) goState(e, 2); else setV(getV() - e.xvel * e.dir); break;
+    case 2: if (sw) sw.aistate = 1; e.aistate = 3; break;
+    case 3: if (sw && sw.aistate === 0) goState(e, 4); break;
+    case 4: if (e.stateTime > e.yvel) goState(e, 5); else setV(getV() + e.xvel * e.dir); break;
+    case 5: if (sw) sw.aistate = 4; e.aistate = 0; break;
+    default: e.aistate = 0;
+  }
+  return true;
+}
+
+// Puts the second linked object (a teleport beam) at this marker when the first link switches on.
+function switchMover(e) {
+  if (e.links.length < 2) return false;
+  const [sw, target] = e.links;
+  if (e.aistate === 0) {
+    if (sw.aistate !== 0) {
+      target.x = e.x; target.y = e.y;
+      if (e.xvel === 0) { target.fade = 15; e.aistate = 1; } else return false;
+    }
+    return true;
+  }
+  if (target.fade === 0) return false;
+  target.fade--;
+  return true;
+}
+
+function teleBeam(e, g) {
+  e.nextPicture();
+  e.a.up ??= e.dir > 0;
+  if (e.a.up) {
+    if (e.fade >= 12) { g.sound('amb16', e.x, e.y, 0.8); e.a.up = false; } else e.fade++;
+  } else if (e.fade <= 5) { g.sound('amb16', e.x, e.y, 0.8); e.a.up = true; } else e.fade--;
+  return true;
+}
+
+function powerUp(name) {
+  return (e, g) => {
+    e.nextPicture();
+    if (!g.touchesPlayer(e)) return true;
+    g.player.power = name;
+    g.sound('health');
+    g.toast(name === 'FAST' ? 'Speed power: hold right mouse button' : name === 'FLY' ? 'Flight power: hold right mouse button' : 'Power acquired');
+    return false;
+  };
+}
+
 function saveStation(e, g) {
   if (e.aistate === 0) {
     if (e.state !== 'stopped') e.setState('stopped');
@@ -394,6 +495,7 @@ function tpDoor(e, g) {
   const near = Math.abs(p.x - e.x) < 100 && Math.abs(p.y - e.y) < 80;
   const frames = e.frames().length;
   e.a.opening = near || !!other?.a.opening;
+  if (e.xvel >= 0 && e.xvel < 64) g.ambient = e.xvel;
   if (e.a.opening) e.frame = Math.min(frames - 1, e.frame + 1); else e.frame = Math.max(0, e.frame - 1);
   if (other && !g.tpLatch && g.pressed('action') && Math.abs(p.x - e.x) < 20 && Math.abs(p.y - e.y) < 30) {
     p.x = other.x; p.y = other.y; p.vx = 0; p.vy = 0;
@@ -569,6 +671,15 @@ export const behaviors = {
   next_level_ai: nextLevel,
   tp2_ai: teleporter,
   platform_ai: platform,
+  train_ai: trainMessage,
+  amb_sound_ai: ambientSound,
+  switch_dim_ai: dimmer,
+  switch_mover_ai: switchMover,
+  tele_beam_ai: teleBeam,
+  fast_ai: powerUp('FAST'),
+  fly_power_ai: powerUp('FLY'),
+  sneaky_power_ai: powerUp('SNEAKY'),
+  do_nothing: (e) => { e.nextPicture(); return true; },
   restart_ai: saveStation,
   tpd_ai: tpDoor,
   ff_ai: forceField,

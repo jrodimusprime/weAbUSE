@@ -54,6 +54,37 @@ function readLvars(spec, typeCount, count, typeIdx) {
   return out;
 }
 
+// Light sources: [u32 count][u32 min level] then 25-byte records.
+function readLights(spec) {
+  const e = spec.find('lights');
+  if (!e) return [];
+  const n = spec.dv.getUint32(e.offset, true);
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const p = e.offset + 8 + i * 25;
+    const u = (k) => spec.dv.getInt32(p + k * 4, true);
+    out.push({ x: u(0), y: u(1), xs: u(2), ys: u(3), inner: u(4), outer: u(5), type: spec.u8[p + 24] });
+  }
+  return out;
+}
+
+// Ambient-light areas: tag byte, count, then 11 u32 per area.
+function readAreas(spec) {
+  const e = spec.find('area_list.v1');
+  if (!e || spec.u8[e.offset] !== 2) return [];
+  const n = spec.dv.getUint32(e.offset + 1, true);
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const p = e.offset + 5 + i * 44;
+    const u = (k) => spec.dv.getInt32(p + k * 4, true);
+    out.push({
+      x: u(0), y: u(1), w: u(2), h: u(3), active: u(4), ambient: u(5),
+      panX: u(6), panY: u(7), ambientSpeed: u(8), panXSpeed: u(9), panYSpeed: u(10),
+    });
+  }
+  return out;
+}
+
 function readStateNames(spec, typeCount) {
   const e = spec.find('describe_states');
   const out = [];
@@ -136,7 +167,7 @@ export async function loadLevel(file) {
     objects.push({
       type, stateName, x: cols.x[i], y: cols.y[i], frame: cols.cur_frame[i], dir: cols.direction[i] || 1,
       fade: cols.fade_count[i], aistate: cols.aistate[i], hp: cols.hp[i], aitype: cols.aitype[i],
-      xvel: cols.xvel[i], yvel: cols.yvel[i], xacel: cols.xacel[i], yacel: cols.yacel[i], links: [], lv: lvars[i],
+      xvel: cols.xvel[i], yvel: cols.yvel[i], xacel: cols.xacel[i], yacel: cols.yacel[i], links: [], lights: [], lv: lvars[i],
     });
   }
 
@@ -151,5 +182,17 @@ export async function loadLevel(file) {
     }
   }
 
-  return { name: file, fgW, fgH, fgmap, bgW, bgH, bgmap, bgRate, objects };
+  const lights = readLights(spec);
+  const areas = readAreas(spec);
+  const lightLinkEntry = spec.find('light_links');
+  if (lightLinkEntry && spec.u8[lightLinkEntry.offset] === 2) {
+    const n = spec.dv.getUint32(lightLinkEntry.offset + 1, true);
+    for (let i = 0; i < n; i++) {
+      const o = spec.dv.getUint32(lightLinkEntry.offset + 5 + i * 8, true);
+      const l = spec.dv.getUint32(lightLinkEntry.offset + 9 + i * 8, true);
+      if (objects[o - 1] && lights[l - 1]) objects[o - 1].lights.push(l - 1);
+    }
+  }
+
+  return { name: file, fgW, fgH, fgmap, bgW, bgH, bgmap, bgRate, objects, lights, areas };
 }

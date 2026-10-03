@@ -14,6 +14,8 @@ game.onGod = (on) => {
   godBtn.classList.toggle('on', on);
 };
 game.onLevel = (name) => { select.value = name; };
+const hint = document.getElementById('hint');
+game.onHelp = (text) => { hint.textContent = text; };
 godBtn.addEventListener('click', () => { game.setGod(!game.god); godBtn.blur(); });
 
 await game.init();

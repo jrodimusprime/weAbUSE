@@ -24,16 +24,19 @@ Any static file server works. The game fetches about 22 MB of art, levels and so
 | Jump | Space, Up, W or Z |
 | Use switch, elevator, door, save station | Down, S or E |
 | Aim / fire | Mouse / left click, F or Ctrl |
-| Weapon | 1-7 or mouse wheel |
+| Weapon | 1-7, Insert / Right Ctrl, or mouse wheel |
+| Special power (once picked up) | Right mouse button |
+| Lights on/off | L |
 | God mode | G or the button (counts would-be deaths per level) |
 
 ## Status
 
-Working: all 22 levels, tiles and parallax, the player, seven weapons, ants, flyers, gun turrets,
-juggernauts, bombs, mines, lava, boulders, doors, switches, logic gates, sensors, elevators,
-ladders, springs, teleporters, force fields, save stations and sound effects.
+Working: all 22 levels, tiles and parallax, per-pixel lighting with ambient areas and dimmer switches,
+the player, seven weapons, ants, flyers, gun turrets, juggernauts, bombs, mines, lava, boulders, doors,
+switches, logic gates, sensors, elevators, ladders, springs, teleporters, force fields, save stations,
+training hints with the original voice-overs, speed and flight power-ups, and sound effects.
 
-Not done yet: robots (`ROB1`), the boss, lighting, music, moving-object scripts, saving and menus.
+Not done yet: robots (`ROB1`), the boss, music, saving and menus.
 
 ## How it works
 

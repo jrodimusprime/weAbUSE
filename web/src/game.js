@@ -6,6 +6,7 @@ import { Entity } from './entity.js';
 import { behaviors, LOGIC_AI, SOLID_AI, isHiddenInPlay } from './behaviors.js';
 import { WEAPONS, WEAPON_ORDER, firePlayer, updateProjectiles, drawProjectiles } from './weapons.js';
 import { Audio } from './audio.js';
+import { LightMap } from './lighting.js';
 
 const VIEW_W = 320;
 const VIEW_H = 200;
@@ -39,6 +40,11 @@ export class Game {
     this.mouse = null;
     this.mouseDown = false;
     this.god = false;
+    this.lightMap = new LightMap();
+    this.lightsOn = true;
+    this.ambient = 32;
+    this.pan = { x: 0, y: 0 };
+    this.rightDown = false;
     this.godDeaths = JSON.parse(localStorage.getItem('abuse.godDeaths') || '{}');
     this.level = null;
     this.entities = [];
@@ -55,6 +61,9 @@ export class Game {
       this.keys.add(e.code);
       if (e.code.startsWith('Arrow') || e.code === 'Space') e.preventDefault();
       if (e.code === 'KeyG' && !e.repeat) this.setGod(!this.god);
+      if (e.code === 'KeyL' && !e.repeat) this.lightsOn = !this.lightsOn;
+      if (e.code === 'Insert') this.cycleWeapon(1);
+      if (e.code === 'ControlRight') this.cycleWeapon(-1);
       const n = e.code.startsWith('Digit') ? parseInt(e.code.slice(5), 10) : 0;
       if (n >= 1 && n <= WEAPON_ORDER.length) this.selectWeapon(WEAPON_ORDER[n - 1]);
     });
@@ -64,8 +73,8 @@ export class Game {
       const b = canvas.getBoundingClientRect();
       this.mouse = { x: ((e.clientX - b.left) / b.width) * VIEW_W, y: ((e.clientY - b.top) / b.height) * VIEW_H };
     });
-    canvas.addEventListener('mousedown', (e) => { if (e.button === 0) this.mouseDown = true; });
-    addEventListener('mouseup', () => { this.mouseDown = false; });
+    canvas.addEventListener('mousedown', (e) => { if (e.button === 0) this.mouseDown = true; if (e.button === 2) this.rightDown = true; });
+    addEventListener('mouseup', () => { this.mouseDown = false; this.rightDown = false; });
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     canvas.addEventListener('wheel', (e) => {
       e.preventDefault();
@@ -112,9 +121,9 @@ export class Game {
     return (this.rng >> 8) % n;
   }
 
-  sound(name, x, y) {
+  sound(name, x, y, volume = 1) {
     const p = this.player;
-    this.audio.play(name, x === undefined ? null : { dx: x - p.x, dy: (y ?? p.y) - p.y });
+    this.audio.play(name, x === undefined ? null : { dx: x - p.x, dy: (y ?? p.y) - p.y }, volume);
   }
 
   async start(file) {
@@ -125,6 +134,8 @@ export class Game {
     this.r.resetAtlas();
     this.level = level;
     this.projs = [];
+    this.ambient = 32;
+    this.pan = { x: 0, y: 0 };
     this.transitioning = false;
     this.onLevel?.(level.name);
 
@@ -135,6 +146,8 @@ export class Game {
       e.lv = o.lv || {};
       e.shootable = def.flags.get('hurtable') === 'T' || /BOMB$/.test(o.type);
       e.logic = LOGIC_AI.has(e.ai);
+      e.fade = o.fade || 0;
+      e.lights = o.lights.map((i) => level.lights[i]);
       return e;
     });
     level.objects.forEach((o, i) => { if (byIndex[i]) byIndex[i].links = o.links.map((j) => byIndex[j]).filter(Boolean); });
@@ -335,6 +348,10 @@ export class Game {
 
   damage(e, amount) {
     if (/BOMB$/.test(e.type)) { e.a.hit = true; return; }
+    if (e.type === 'SWITCH_BALL') {
+      if (e.state === 'stopped') { e.aistate = 1; e.setState('running'); this.sound('switch', e.x, e.y); }
+      return;
+    }
     e.hp -= amount;
     if (e.hp > 0 && this.rand(3) === 0) {
       if (e.def.states.has('flinch_up') && !/^(HIDDEN|TRACK|SPRAY)/.test(e.type)) e.setState('flinch_up');
@@ -383,6 +400,13 @@ export class Game {
     this.msgTime = 45;
   }
 
+  // Training hint shown over the game, with the original voice-over when there is one.
+  showHelp(text, voice) {
+    this.onHelp?.(text);
+    this.helpTime = 60;
+    if (voice && this.helpVoice !== voice) { this.helpVoice = voice; this.audio.play(`voice/${voice}`, null); }
+  }
+
   // Save stations move the respawn point and restore health.
   setCheckpoint(x, y) {
     this.startPos = { x, y };
@@ -417,6 +441,8 @@ export class Game {
     if (!this.pressed('action')) this.tpLatch = false;
     this.tickCount = (this.tickCount || 0) + 1;
     if (this.msgTime > 0) this.msgTime--;
+    if (this.helpTime > 0 && --this.helpTime === 0) { this.onHelp?.(''); this.helpVoice = null; }
+    this.applyArea();
     for (const e of this.entities) { e.px = e.x; e.py = e.y; }
     for (const e of this.entities.slice()) {
       if (e.dead || !e.ai) continue;
@@ -436,6 +462,20 @@ export class Game {
     this.refreshSolids();
   }
 
+  // The smallest area containing the player steers ambient light and the camera pan.
+  applyArea() {
+    const p = this.player;
+    let best = null, size = Infinity;
+    for (const a of this.level.areas) {
+      if (p.x >= a.x && p.y >= a.y && p.x <= a.x + a.w && p.y <= a.y + a.h && a.w * a.h < size) { best = a; size = a.w * a.h; }
+    }
+    if (!best) return;
+    const step = (cur, target, speed) => (speed > 0 ? cur + Math.max(-speed, Math.min(speed, target - cur)) : target);
+    if (best.ambient >= 0) this.ambient = step(this.ambient, best.ambient, best.ambientSpeed);
+    this.pan.x = step(this.pan.x, best.panX, best.panXSpeed);
+    this.pan.y = step(this.pan.y, best.panY, best.panYSpeed);
+  }
+
   inLadder(p) {
     return this.ladders.find((l) => p.x >= l.x0 && p.x <= l.x1 && p.y >= l.y0 && p.y <= l.y1);
   }
@@ -449,7 +489,7 @@ export class Game {
       p.deadTime -= dt;
       p.vy = Math.min(MAX_FALL, p.vy + GRAVITY * dt);
       this.moveY(p, p.vy * dt);
-      if (p.deadTime <= 0) this.respawn();
+      if (p.deadTime <= 0) { p.power = null; this.respawn(); }
       return;
     }
 
@@ -477,12 +517,17 @@ export class Game {
 
     if (!p.climbing) {
       const target = (right ? 1 : 0) - (left ? 1 : 0);
+      const power = this.rightDown ? p.power : null;
+      const run = RUN_SPEED * (power === 'FAST' ? 1.7 : 1);
       const accel = p.ground ? 1400 : 700;
-      if (target) { p.dir = target; p.vx += target * accel * dt; p.vx = Math.max(-RUN_SPEED, Math.min(RUN_SPEED, p.vx)); }
+      if (target) { p.dir = target; p.vx += target * accel * dt; p.vx = Math.max(-run, Math.min(run, p.vx)); }
       else p.vx -= Math.sign(p.vx) * Math.min(Math.abs(p.vx), 1800 * dt);
 
-      if (jump && p.ground) { p.vy = -JUMP_VEL; p.ground = false; }
-      p.vy = Math.min(MAX_FALL, p.vy + GRAVITY * dt);
+      if (power === 'FLY') p.vy = ((down ? 1 : 0) - (up || jump ? 1 : 0)) * 110;
+      else {
+        if (jump && p.ground) { p.vy = -JUMP_VEL; p.ground = false; }
+        p.vy = Math.min(MAX_FALL, p.vy + GRAVITY * dt);
+      }
 
       const wasGround = p.ground;
       this.moveX(p, p.vx * dt);
@@ -498,6 +543,9 @@ export class Game {
 
       p.anim += dt * (p.ground && Math.abs(p.vx) > 10 ? 15 * Math.abs(p.vx) / RUN_SPEED * 1.4 : 6);
       p.state = !p.ground ? (p.vy < 0 ? 'run_jump' : 'run_jump_fall') : Math.abs(p.vx) > 10 ? 'running' : 'stopped';
+      const moving = Math.abs(p.vx) > 10;
+      if (power === 'FLY') p.state = moving ? 'fly_running' : 'fly_stopped';
+      else if (power === 'FAST' && p.ground && moving) p.state = 'fast_running';
     }
 
     if (this.mouse) {
@@ -508,10 +556,10 @@ export class Game {
     } else p.aimAngle = p.dir > 0 ? 0 : Math.PI;
     p.aim = Math.round(((p.aimAngle + 2 * Math.PI) % (2 * Math.PI)) / (Math.PI / 12)) % 24;
 
-    if (this.mouseDown || k.has('KeyF') || k.has('ControlLeft') || k.has('ControlRight')) firePlayer(this);
+    if (this.mouseDown || k.has('KeyF') || k.has('ControlLeft')) firePlayer(this);
 
-    const tx = p.x - VIEW_W / 2 + p.dir * 24;
-    const ty = p.y - BODY_H / 2 - VIEW_H / 2;
+    const tx = p.x - VIEW_W / 2 + p.dir * 24 + this.pan.x;
+    const ty = p.y - BODY_H / 2 - VIEW_H / 2 + this.pan.y;
     this.cam.x += (tx - this.cam.x) * Math.min(1, dt * 6);
     this.cam.y += (ty - this.cam.y) * Math.min(1, dt * 6);
     this.cam.x = Math.max(0, Math.min(this.cam.x, this.level.fgW * this.tw - VIEW_W));
@@ -561,6 +609,8 @@ export class Game {
     const cx = Math.floor(this.cam.x), cy = Math.floor(this.cam.y);
     const alpha = Math.min(1, this.tickAcc / TICK);
     r.begin();
+    if (this.lightsOn) r.setLightMap(this.lightMap.update(lv.lights, cx, cy, this.ambient));
+    r.setLit(this.lightsOn);
 
     if (lv.bgW) {
       const bx = Math.floor(cx * lv.bgRate.xmul / lv.bgRate.xdiv);
@@ -590,6 +640,7 @@ export class Game {
       const x = still ? e.x : e.px + (e.x - e.px) * alpha, y = still ? e.y : e.py + (e.y - e.py) * alpha;
       if (x < cx - 160 || x > cx + VIEW_W + 160 || y < cy - 80 || y > cy + VIEW_H + 200) continue;
       if (isHiddenInPlay(e.def)) continue;
+      if (e.ai === 'tele_beam_ai' && e.fade < 8 && (this.tickCount & 1)) continue;
       if (MIDDLE_DRAW.has(e.def.funs.get('draw_fun'))) { fx.push([e, x, y]); continue; }
       this.blit(e.def, e.state, e.frame, x, y, e.dir);
       if (e.a.beam) this.drawBeam(e);
@@ -601,6 +652,7 @@ export class Game {
     const top = !p.dead && this.assets.defs.get(WEAPONS[p.weapon]?.top);
     if (top && !p.climbing) this.blit(top, 'stopped', p.aim, p.dir > 0 ? p.x : p.x + 2, p.y, 1);
 
+    r.setLit(false);
     drawProjectiles(this, alpha);
     for (const [e, x, y] of fx) this.blit(e.def, e.state, e.frame, x, y, e.dir, true);
     r.flush();
