@@ -626,7 +626,10 @@ export class Game {
         p.y = this.startPos.y; p.x = this.startPos.x; p.vy = 0;
       }
 
-      p.anim += dt * (p.ground && Math.abs(p.vx) > 10 ? 15 * Math.abs(p.vx) / RUN_SPEED * 1.4 : 6);
+      // The original advances the player's frame once per 15 Hz tick in every
+      // state (cop.cpp player_move calls next_picture each tick), so the idle
+      // and run cycles both run at the one fixed rate.
+      p.anim += dt / TICK;
       p.state = !p.ground ? (p.vy < 0 ? 'run_jump' : 'run_jump_fall') : Math.abs(p.vx) > 10 ? 'running' : 'stopped';
       const moving = Math.abs(p.vx) > 10;
       if (power === 'FLY') p.state = moving ? 'fly_running' : 'fly_stopped';
@@ -736,7 +739,7 @@ export class Game {
     const body = this.assets.defs.get('DARNEL');
     if (body) this.blit(body, p.dead ? 'dead' : p.state, p.anim, p.x, p.y, p.dir);
     const top = !p.dead && this.assets.defs.get(WEAPONS[p.weapon]?.top);
-    if (top && !p.climbing) this.blit(top, 'stopped', p.aim, p.dir > 0 ? p.x : p.x + 2, p.y, 1);
+    if (top && !p.climbing) this.blit(top, 'stopped', p.aim, p.dir > 0 ? p.x : p.x + 4, p.y, 1);
 
     r.setLit(false);
     drawProjectiles(this, alpha);

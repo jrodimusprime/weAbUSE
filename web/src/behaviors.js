@@ -96,7 +96,7 @@ function ant(e, g) {
       break;
     case 'running': {
       contact();
-      if (g.rand(16) === 0) a.dodge = 1;
+      if (g.rand(20) === 0) a.dodge = 1;
       if (a.dodge) {
         a.dodge = 0;
         if (g.rand(2) === 0) { startJump(e.dir * 11, -10); break; }
@@ -104,9 +104,10 @@ function ant(e, g) {
       const toward = (dx > 0 && e.dir === 1) || (dx < 0 && e.dir === -1);
       if (!toward) { face(); e.setState('landing'); a.st = 'landing'; break; }
       e.nextPicture();
-      if (g.rand(4) === 0 && Math.abs(dx) < 180 && Math.abs(dy) < 100 && g.sees(e.x + e.dir * 15, e.y - 15, p.x, p.y - 15)) {
+      // Original ant (aistate 2 -> 8): 1/5 chance to fire when facing you.
+      if (g.rand(5) === 0 && Math.abs(dx) < 180 && Math.abs(dy) < 100 && g.sees(e.x + e.dir * 15, e.y - 15, p.x, p.y - 15)) {
         e.setState('fire_wait'); a.st = 'fire';
-      } else if (Math.abs(dx) < 100 && Math.abs(dy) < 10 && g.rand(4) === 0) { e.setState('pounce_wait'); a.st = 'pounce'; a.t = 0; }
+      } else if (Math.abs(dx) < 100 && Math.abs(dx) > 10 && Math.abs(dy) < 10 && g.rand(5) === 0) { e.setState('pounce_wait'); a.st = 'pounce'; a.t = 0; }
       else if (Math.abs(dx) > 140 && g.rand(3) === 0) startJump(e.dir * 11, -9);
       else {
         if (e.state !== 'running') e.setState('running');
