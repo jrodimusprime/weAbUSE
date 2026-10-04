@@ -4,7 +4,7 @@ import { Assets } from './assets.js';
 import { loadLevel } from './level.js';
 import { Entity } from './entity.js';
 import { behaviors, LOGIC_AI, SOLID_AI, isHiddenInPlay } from './behaviors.js';
-import { WEAPONS, WEAPON_ORDER, firePlayer, updateProjectiles, drawProjectiles } from './weapons.js';
+import { WEAPONS, WEAPON_ORDER, firePlayer, updateProjectiles, drawProjectiles, SMALL_FIRE_OFF, LARGE_FIRE_OFF } from './weapons.js';
 import { Audio } from './audio.js';
 import { LightMap } from './lighting.js';
 
@@ -416,13 +416,16 @@ export class Game {
     p.x = sx; p.y = sy; p.vx = 0; p.vy = 0; p.ground = false;
   }
 
-  damage(e, amount) {
+  damage(e, amount, pushX = 0, pushY = 0) {
     if (/BOMB$/.test(e.type)) { e.a.hit = true; return; }
     if (e.type === 'SWITCH_BALL') {
       if (e.state === 'stopped') { e.aistate = 1; e.setState('running'); this.sound('switch', e.x, e.y); }
       return;
     }
     e.hp -= amount;
+    // Original do_damage passes push velocities to the victim's hurt function;
+    // entity velocities here are px/tick, the same unit the C++ uses.
+    if (pushX || pushY) { e.vx += pushX; e.vy += pushY; }
     if (e.hp > 0 && this.rand(3) === 0) {
       if (e.def.states.has('flinch_up') && !/^(HIDDEN|TRACK|SPRAY)/.test(e.type)) e.setState('flinch_up');
     }
@@ -643,13 +646,41 @@ export class Game {
     }
 
     if (this.mouse) {
-      // 24 upper-body frames, 15 degrees apart, counter-clockwise from facing right.
-      // Aim pivot is at y-16, matching the original player_fire_weapon.
-      const ang = Math.atan2(p.y - 16 - this.cam.y - this.mouse.y, this.mouse.x - (p.x - this.cam.x));
-      p.aimAngle = ang;
-      p.dir = this.mouse.x >= p.x - this.cam.x ? 1 : -1;
-    } else p.aimAngle = p.dir > 0 ? 0 : Math.PI;
-    p.aim = Math.round(((p.aimAngle + 2 * Math.PI) % (2 * Math.PI)) / (Math.PI / 12)) % 24;
+      // cop.cpp top_ai: pick the upper-body frame by angular distance to the
+      // pointer, pivoted at the gun grip (fire_off[12], fire_off[1]). The fire
+      // angle (point_angle) is measured from the barrel tip to the pointer, or
+      // is the frame's own angle when the pointer sits right at the muzzle.
+      // The body-facing shift (x+4 when facing left) is applied first, exactly
+      // like top_ai and player_fire_weapon do.
+      const w = WEAPONS[p.weapon];
+      const foff = w && w.large ? LARGE_FIRE_OFF : SMALL_FIRE_OFF;
+      const base = p.dir < 0 ? p.x + 4 : p.x;
+      const ix = foff[12], iy = foff[1];
+      const mwx = this.mouse.x + this.cam.x, mwy = this.mouse.y + this.cam.y;
+      let bestDeg = Math.atan2(p.y - iy - mwy, mwx - (base + ix)) * 180 / Math.PI;
+      if (bestDeg < 0) bestDeg += 360;
+      let best = 0, bd = Infinity;
+      for (let i = 0; i < 24; i++) {
+        let ta = Math.atan2(foff[i * 2 + 1] - iy, foff[i * 2] - ix) * 180 / Math.PI;
+        if (ta < 0) ta += 360;
+        let d = Math.abs(ta - bestDeg);
+        if (d > 180) d = 360 - d;
+        if (d < bd) { bd = d; best = i; }
+      }
+      p.aim = best;
+      const fbX = foff[best * 2], fbY = foff[best * 2 + 1];
+      let point;
+      if (Math.abs(p.y - fbY - mwy) < 45 && Math.abs(mwx - (base + fbX)) < 40) {
+        point = Math.atan2(fbY - iy, fbX - ix) * 180 / Math.PI;
+      } else {
+        point = Math.atan2(p.y - fbY - mwy, mwx - (base + fbX)) * 180 / Math.PI;
+      }
+      if (point < 0) point += 360;
+      p.aimAngle = point; // degrees, like lisp_atan2
+    } else {
+      p.aimAngle = p.dir > 0 ? 0 : 180;
+      p.aim = p.dir > 0 ? 0 : 12;
+    }
 
     if (this.mouseDown || k.has('KeyF') || k.has('ControlLeft')) firePlayer(this);
 

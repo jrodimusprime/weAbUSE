@@ -1,13 +1,27 @@
 // Player weapons and projectiles (player and enemy).
 
+// cop.cpp: small_fire_off / large_fire_off — x & y offset from the character to
+// the end of the gun, per upper-body frame (24 frames around the clock).
+export const SMALL_FIRE_OFF = [
+  17, 20, 17, 23, 17, 28, 15, 33, 11, 39, 7, 43, -3, 44, -10, 42,
+  -16, 39, -20, 34, -20, 28, -20, 25, -19, 20, -19, 16, -16, 14, -14, 11,
+  -11, 9, -7, 8, -3, 8, 2, 8, 6, 9, 10, 10, 14, 13, 16, 15,
+];
+export const LARGE_FIRE_OFF = [
+  18, 25, 17, 30, 15, 34, 14, 36, 10, 39, 7, 41, 4, 42, -3, 41,
+  -8, 39, -11, 37, -14, 33, -16, 30, -18, 25, -17, 21, -14, 17, -11, 15,
+  -7, 13, -4, 12, 3, 12, 9, 12, 12, 15, 14, 16, 15, 18, 16, 21,
+];
+
 export const WEAPONS = {
-  MGUN: { top: 'MGUN_TOP', label: 'Machine gun', kind: 'bullet', delay: 0.1, aim: 1 },
-  PGUN: { top: 'PGUN_TOP', label: 'Plasma', kind: 'plasma', delay: 0.2 },
-  GRENADE: { top: 'GRENADE_TOP', label: 'Grenades', kind: 'grenade', delay: 0.55 },
-  ROCKET: { top: 'ROCKET_TOP', label: 'Rockets', kind: 'rocket', delay: 0.6 },
-  FIREBOMB: { top: 'FIREBOMB_TOP', label: 'Fire bombs', kind: 'grenade', delay: 0.6, fire: true },
-  DFRIS: { top: 'DFRIS_TOP', label: 'Death frisbee', kind: 'plasma', delay: 0.3, big: true },
-  LSABER: { top: 'LIGHT_SABER', label: 'Light saber', kind: 'plasma', delay: 0.12, big: true },
+  // delay = original fire_delay1 (ticks at 15 Hz) converted to seconds.
+  MGUN: { top: 'MGUN_TOP', label: 'Machine gun', kind: 'bullet', delay: 3 / 15, aim: 1 },
+  PGUN: { top: 'PGUN_TOP', label: 'Plasma', kind: 'plasma', delay: 2 / 15 },
+  GRENADE: { top: 'GRENADE_TOP', label: 'Grenades', kind: 'grenade', delay: 6 / 15 },
+  ROCKET: { top: 'ROCKET_TOP', label: 'Rockets', kind: 'rocket', delay: 6 / 15, large: true },
+  FIREBOMB: { top: 'FIREBOMB_TOP', label: 'Fire bombs', kind: 'grenade', delay: 6 / 15, fire: true },
+  DFRIS: { top: 'DFRIS_TOP', label: 'Death frisbee', kind: 'plasma', delay: 6 / 15, big: true, large: true },
+  LSABER: { top: 'LIGHT_SABER', label: 'Light saber', kind: 'plasma', delay: 1 / 15, big: true },
 };
 export const WEAPON_ORDER = ['MGUN', 'PGUN', 'GRENADE', 'ROCKET', 'FIREBOMB', 'DFRIS', 'LSABER'];
 
@@ -47,21 +61,26 @@ export function firePlayer(g) {
   }
   p.cooldown = w.delay;
   p.justFired = true; // people.lsp: player flashes with bright_tint after firing
-  const ang = p.aimAngle;
+  // p.aimAngle is the original's point_angle in degrees (cop.cpp top_ai).
+  const ang = p.aimAngle * Math.PI / 180;
   const c = Math.cos(ang), s = -Math.sin(ang);
-  // Muzzle from the original player_fire_weapon:
-  //   firex = x + cos(angle)*17 + xvel, firey = y - sin(angle)*16 - 20 + yvel
-  const ox = p.x + c * 17 + p.vx / 15;
-  const oy = p.y - 20 + s * 16 + p.vy / 15;
+  // player_fire_weapon (cop.cpp): the muzzle is a per-frame table offset from
+  // the character (fire_off), with x shifted +4 when the body faces left.
+  const foff = w.large ? LARGE_FIRE_OFF : SMALL_FIRE_OFF;
+  const frame = ((p.aim % 24) + 24) % 24;
+  const ox = (p.dir < 0 ? p.x + 4 : p.x) + foff[frame * 2];
+  const oy = p.y - foff[frame * 2 + 1];
   const vx0 = p.vx / 15;
   if (w.kind === 'bullet') {
-    const spread = (g.rand(100) - 50) / 1500;
-    const a = ang + spread;
-    // SHOTGUN_BULLET (guns.lsp type 10): speed 15 + creator xvel/2, lifetime 6.
-    // It spawns at the muzzle from player_fire_weapon — sgun_ufun is never called
-    // (user_fun is an explicit call and guns.lsp doesn't invoke it), so no extra offset.
+    // SHOTGUN_BULLET (guns.lsp fire_object type 10): speed 15 + creator xvel/2,
+    // lifetime 6, red palette colours (find_rgb 255 0 0 / 150 0 0). The C++
+    // sgun_ai accelerates it 6/5 every tick along a fixed angle — that is what
+    // gives the original its range, and there is no spread.
     const speed = 15 + p.vx / 30;
-    g.projs.push({ kind: 'bullet', x: ox, y: oy, px: ox, py: oy, vx: Math.cos(a) * speed, vy: -Math.sin(a) * speed, life: 6, dmg: 3, mine: true });
+    g.projs.push({
+      kind: 'bullet', x: ox, y: oy, px: ox, py: oy, speed, angDeg: p.aimAngle,
+      vx: c * speed, vy: s * speed, life: 6, dmg: 5, mine: true,
+    });
     g.sound('mgun');
   } else if (w.kind === 'plasma') {
     g.projs.push({ kind: 'plasma', x: ox, y: oy, px: ox, py: oy, vx: c * 34, vy: s * 34, life: 20, dmg: w.big ? 18 : 9, mine: true, big: !!w.big });
@@ -108,7 +127,18 @@ function detonate(g, b) {
 export function updateProjectiles(g) {
   for (const b of g.projs) {
     b.px = b.x; b.py = b.y;
-    if (--b.life <= 0) { if (b.kind === 'grenade') detonate(g, b); else b.dead = true; continue; }
+    const bullet = b.kind === 'bullet';
+    if (bullet) {
+      // C++ sgun_ai (cop.cpp): the bullet accelerates 6/5 each tick and moves
+      // along a fixed angle. It dies when lifetime reaches 0, after moving.
+      b.speed = b.speed * 6 / 5;
+      const a = b.angDeg * Math.PI / 180;
+      b.vx = Math.cos(a) * b.speed;
+      b.vy = -Math.sin(a) * b.speed;
+    } else if (--b.life <= 0) {
+      if (b.kind === 'grenade') detonate(g, b); else b.dead = true;
+      continue;
+    }
     if (b.gravity) b.vy += b.gravity;
     if (b.kind === 'rocket') { b.vx *= 1.04; b.vy *= 1.04; if (++b.smoke % 2 === 0) g.effect('SMALL_LIGHT_CLOUD', b.x, b.y); }
     const steps = Math.max(1, Math.ceil(Math.hypot(b.vx, b.vy) / 3));
@@ -128,11 +158,26 @@ export function updateProjectiles(g) {
         break;
       }
       if (b.kind === 'grenade' || b.kind === 'rocket') { detonate(g, b); break; }
+      if (bullet) {
+        // sgun_ai: a wall hit pops EXPLODE5; a hurtable hit pops EXPLODE3 and
+        // deals 5 damage with a push along the bullet's direction.
+        if (hit.tile) {
+          g.effect('EXPLODE5', b.x + g.rand(4), b.y + g.rand(4));
+        } else {
+          g.effect('EXPLODE3', b.x + g.rand(4), b.y + g.rand(4));
+          const a = b.angDeg * Math.PI / 180;
+          g.damage(hit.entity, 5, Math.cos(a) * 10, Math.sin(a) * 10);
+        }
+        b.dead = true;
+        break;
+      }
       if (hit.entity) g.damage(hit.entity, b.dmg, b);
       if (hit.player) g.hurtPlayer(b.dmg);
-      g.effect(b.kind === 'bullet' ? 'SMALL_LIGHT_CLOUD' : b.mine ? 'EXPLODE6' : 'EXPLODE7', b.x, b.y);
+      g.effect(b.mine ? 'EXPLODE6' : 'EXPLODE7', b.x, b.y);
       b.dead = true;
     }
+    // sgun_ai decrements lifetime after the move; the bullet dies at 0.
+    if (bullet && !b.dead && --b.life <= 0) b.dead = true;
     if (b.kind === 'grenade' && !b.dead) b.dir = b.vx >= 0 ? 1 : -1;
   }
   g.projs = g.projs.filter((b) => !b.dead);
