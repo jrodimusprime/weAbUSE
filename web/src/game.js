@@ -634,8 +634,9 @@ export class Game {
     }
 
     if (this.mouse) {
-      // 24 upper-body frames, 15 degrees apart, counter-clockwise from facing right
-      const ang = Math.atan2(p.y - BODY_H * 0.6 - this.cam.y - this.mouse.y, this.mouse.x - (p.x - this.cam.x));
+      // 24 upper-body frames, 15 degrees apart, counter-clockwise from facing right.
+      // Aim pivot is at y-16, matching the original player_fire_weapon.
+      const ang = Math.atan2(p.y - 16 - this.cam.y - this.mouse.y, this.mouse.x - (p.x - this.cam.x));
       p.aimAngle = ang;
       p.dir = this.mouse.x >= p.x - this.cam.x ? 1 : -1;
     } else p.aimAngle = p.dir > 0 ? 0 : Math.PI;

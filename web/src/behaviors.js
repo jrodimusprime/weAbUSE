@@ -174,9 +174,10 @@ function turret(e, g) {
   if (e.hp <= 0) { killEffects(e, g, true); return false; }
   const aimFrames = e.def.states.get('spinning') || e.def.states.get('spray.aim');
   const n = aimFrames?.length || 24;
-  const fx = e.x, fy = e.y - 10;
-  const canSee = Math.hypot(p.x - fx, p.y - 15 - fy) < 320 && g.sees(fx, fy, p.x, p.y - 15);
-  const want = Math.atan2(-(p.y - 15 - fy), p.x - fx);
+  // Muzzle from the original spray_fire: (x + cos*20, y - 21 - sin*22)
+  const baseY = e.y - 21;
+  const canSee = Math.hypot(p.x - e.x, p.y - 15 - baseY) < 320 && g.sees(e.x, baseY, p.x, p.y - 15);
+  const want = Math.atan2(-(p.y - 15 - baseY), p.x - e.x);
   if (canSee) {
     const target = Math.round(((want + 2 * Math.PI) % (2 * Math.PI)) / (2 * Math.PI) * n) % n;
     const diff = ((target - (a.frame ?? 0) + n * 1.5) % n) - n / 2;
@@ -185,7 +186,7 @@ function turret(e, g) {
     if (a.cd > 0) a.cd--;
     else if (Math.abs(diff) < 1.5) {
       const dmg = e.type === 'SPRAY_GUN' ? 5 : 8;
-      enemyShot(g, fx + Math.cos(want) * 12, fy - Math.sin(want) * 12, p.x, p.y - 15, 18, dmg, 'spark');
+      enemyShot(g, e.x + Math.cos(want) * 20, baseY - Math.sin(want) * 22, p.x, p.y - 15, 18, dmg, 'spark');
       a.cd = e.type === 'SPRAY_GUN' ? 3 : (e.lv?.fire_delay || 8);
     }
   }

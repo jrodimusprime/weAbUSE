@@ -32,7 +32,10 @@ export function firePlayer(g) {
   p.cooldown = w.delay;
   const ang = p.aimAngle;
   const c = Math.cos(ang), s = -Math.sin(ang);
-  const ox = p.x + c * 18, oy = p.y - 24 + s * 18;
+  // Muzzle from the original player_fire_weapon:
+  //   firex = x + cos(angle)*17 + xvel, firey = y - sin(angle)*16 - 20 + yvel
+  const ox = p.x + c * 17 + p.vx / 15;
+  const oy = p.y - 20 + s * 16 + p.vy / 15;
   const vx0 = p.vx / 15;
   if (w.kind === 'bullet') {
     const spread = (g.rand(100) - 50) / 1500;
