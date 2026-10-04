@@ -11,6 +11,22 @@ export const WEAPONS = {
 };
 export const WEAPON_ORDER = ['MGUN', 'PGUN', 'GRENADE', 'ROCKET', 'FIREBOMB', 'DFRIS', 'LSABER'];
 
+// 1px Bresenham line in a palette colour (the original draws bullets with draw_line).
+function dline(r, x0, y0, x1, y1, idx) {
+  let x = Math.round(x0), y = Math.round(y0);
+  const tx = Math.round(x1), ty = Math.round(y1);
+  const dx = Math.abs(tx - x), dy = Math.abs(ty - y);
+  const sx = x < tx ? 1 : -1, sy = y < ty ? 1 : -1;
+  let err = dx - dy;
+  for (let i = 0; i < 400; i++) {
+    r.rect(x, y, 1, 1, idx);
+    if (x === tx && y === ty) break;
+    const e2 = 2 * err;
+    if (e2 > -dy) { err -= dy; x += sx; }
+    if (e2 < dx) { err += dx; y += sy; }
+  }
+}
+
 const ICON_WEAPON = {
   MBULLET: 'MGUN', PLASMA: 'PGUN', GRENADE: 'GRENADE', ROCKET: 'ROCKET', FBOMB: 'FIREBOMB', DFRIS: 'DFRIS', LSABER: 'LSABER',
 };
@@ -30,6 +46,7 @@ export function firePlayer(g) {
     p.ammo[p.weapon]--;
   }
   p.cooldown = w.delay;
+  p.justFired = true; // people.lsp: player flashes with bright_tint after firing
   const ang = p.aimAngle;
   const c = Math.cos(ang), s = -Math.sin(ang);
   // Muzzle from the original player_fire_weapon:
@@ -40,7 +57,11 @@ export function firePlayer(g) {
   if (w.kind === 'bullet') {
     const spread = (g.rand(100) - 50) / 1500;
     const a = ang + spread;
-    g.projs.push({ kind: 'bullet', x: ox, y: oy, px: ox, py: oy, vx: Math.cos(a) * 60, vy: -Math.sin(a) * 60, life: 8, dmg: 3, mine: true });
+    // SHOTGUN_BULLET (guns.lsp type 10): speed 15 + creator xvel/2, lifetime 6,
+    // and sgun_ufun offsets it x + dir*20, y - 4 from the muzzle.
+    const speed = 15 + p.vx / 30;
+    const bx = ox + p.dir * 20, by = oy - 4;
+    g.projs.push({ kind: 'bullet', x: bx, y: by, px: bx, py: by, vx: Math.cos(a) * speed, vy: -Math.sin(a) * speed, life: 6, dmg: 3, mine: true });
     g.sound('mgun');
   } else if (w.kind === 'plasma') {
     g.projs.push({ kind: 'plasma', x: ox, y: oy, px: ox, py: oy, vx: c * 34, vy: s * 34, life: 20, dmg: w.big ? 18 : 9, mine: true, big: !!w.big });
@@ -124,9 +145,18 @@ export function drawProjectiles(g, alpha) {
   for (const b of g.projs) {
     const x = b.px + (b.x - b.px) * alpha - cx;
     const y = b.py + (b.y - b.py) * alpha - cy;
-    if (b.kind === 'bullet' || b.kind === 'plasma' || b.kind === 'acid' || b.kind === 'spark') {
-      const c1 = b.kind === 'bullet' ? col.yellow : b.kind === 'plasma' ? col.cyan : b.kind === 'acid' ? col.green : col.orange;
-      const n = b.kind === 'bullet' ? 4 : 3;
+    if (b.kind === 'bullet') {
+      // Original sgun_draw: bright centre line with medium-red neighbours.
+      const lx = Math.round(b.px - cx), ly = Math.round(b.py - cy);
+      const tx = Math.round(x), ty = Math.round(y);
+      dline(r, lx, ly - 1, tx, ty - 1, col.redDark);
+      dline(r, lx, ly + 1, tx, ty + 1, col.redDark);
+      dline(r, lx - 1, ly, tx - 1, ty, col.redBright);
+      dline(r, lx + 1, ly, tx + 1, ty, col.redDark);
+      dline(r, lx, ly, tx, ty, col.redBright);
+    } else if (b.kind === 'plasma' || b.kind === 'acid' || b.kind === 'spark') {
+      const c1 = b.kind === 'plasma' ? col.cyan : b.kind === 'acid' ? col.green : col.orange;
+      const n = 3;
       for (let i = 0; i < n; i++) {
         const t = i / n;
         const sx = Math.round(x - b.vx * t * 0.6), sy = Math.round(y - b.vy * t * 0.6);

@@ -110,6 +110,7 @@ export class Game {
     this.colors = {
       white: nearest(255, 255, 255), yellow: nearest(255, 230, 90), cyan: nearest(120, 220, 255),
       green: nearest(90, 255, 90), orange: nearest(255, 140, 40),
+      redBright: nearest(255, 0, 0), redDark: nearest(150, 0, 0),
     };
     this.player = {
       x: 0, y: 0, vx: 0, vy: 0, dir: 1, ground: false, anim: 0, state: 'stopped', aim: 0, aimAngle: 0,
@@ -742,9 +743,13 @@ export class Game {
 
     const p = this.player;
     const body = this.assets.defs.get('DARNEL');
+    // just_fired: the original draws the player with the bright tint for the
+    // frame after firing (people.lsp player_draw / bright_tint).
+    if (p.justFired) r.setBright(1.8);
     if (body) this.blit(body, p.dead ? 'dead' : p.state, p.anim, p.x, p.y, p.dir);
     const top = !p.dead && this.assets.defs.get(WEAPONS[p.weapon]?.top);
     if (top && !p.climbing) this.blit(top, 'stopped', p.aim, p.dir > 0 ? p.x : p.x + 4, p.y, 1);
+    if (p.justFired) { r.setBright(1); p.justFired = false; }
 
     r.setLit(false);
     drawProjectiles(this, alpha);

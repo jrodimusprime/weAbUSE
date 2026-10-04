@@ -171,6 +171,15 @@ export class Renderer {
     this.count = 0;
   }
 
+  // Palette brightness multiplier, used for the player's muzzle-flash tint.
+  // Flushes first so it only affects subsequent quads.
+  setBright(v) {
+    if (this.brightValue === v) return;
+    this.brightValue = v;
+    this.flush();
+    this.gl.uniform1f(this.brightLoc, v);
+  }
+
   draw(img, x, y, { flip = false, opaque = false, w = img.w, h = img.h } = {}) {
     if (x >= this.w || y >= this.h || x + w <= 0 || y + h <= 0) return;
     this.place(img);
