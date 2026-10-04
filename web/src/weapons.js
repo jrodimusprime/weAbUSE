@@ -57,11 +57,11 @@ export function firePlayer(g) {
   if (w.kind === 'bullet') {
     const spread = (g.rand(100) - 50) / 1500;
     const a = ang + spread;
-    // SHOTGUN_BULLET (guns.lsp type 10): speed 15 + creator xvel/2, lifetime 6,
-    // and sgun_ufun offsets it x + dir*20, y - 4 from the muzzle.
+    // SHOTGUN_BULLET (guns.lsp type 10): speed 15 + creator xvel/2, lifetime 6.
+    // It spawns at the muzzle from player_fire_weapon — sgun_ufun is never called
+    // (user_fun is an explicit call and guns.lsp doesn't invoke it), so no extra offset.
     const speed = 15 + p.vx / 30;
-    const bx = ox + p.dir * 20, by = oy - 4;
-    g.projs.push({ kind: 'bullet', x: bx, y: by, px: bx, py: by, vx: Math.cos(a) * speed, vy: -Math.sin(a) * speed, life: 6, dmg: 3, mine: true });
+    g.projs.push({ kind: 'bullet', x: ox, y: oy, px: ox, py: oy, vx: Math.cos(a) * speed, vy: -Math.sin(a) * speed, life: 6, dmg: 3, mine: true });
     g.sound('mgun');
   } else if (w.kind === 'plasma') {
     g.projs.push({ kind: 'plasma', x: ox, y: oy, px: ox, py: oy, vx: c * 34, vy: s * 34, life: 20, dmg: w.big ? 18 : 9, mine: true, big: !!w.big });
