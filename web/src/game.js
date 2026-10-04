@@ -427,21 +427,22 @@ export class Game {
     }
   }
 
-  explode(x, y, radius, dmg, fromPlayer, noEntities = false) {
+  explode(x, y, radius, dmg, fromPlayer, noEntities = false, exclude = null) {
     this.effect('EXPLODE1', x, y);
     this.effect('EXPLODE3', x + this.rand(10) - 5, y + this.rand(10) - 5);
     this.sound('explode', x, y);
     if (!noEntities) {
+      // Linear falloff like the original hurt_radius: damage = (r - d) * m / r.
       for (const e of this.entities) {
-        if (e.dead || !e.shootable) continue;
+        if (e.dead || e === exclude || !e.shootable) continue;
         const d = Math.hypot(e.x - x, e.y - 10 - y);
-        if (d < radius) this.damage(e, Math.max(1, dmg * (1 - (d / radius) * 0.7)));
+        if (d < radius) this.damage(e, Math.max(1, ((radius - d) * dmg) / radius));
       }
     }
     const p = this.player;
     const d = Math.hypot(p.x - x, p.y - 18 - y);
     if (d < radius) {
-      this.hurtPlayer(Math.max(1, dmg * (1 - d / radius) * (fromPlayer ? 0.5 : 1)));
+      this.hurtPlayer(Math.max(1, ((radius - d) * dmg * (fromPlayer ? 0.5 : 1)) / radius));
       p.vx += Math.sign(p.x - x || 1) * (1 - d / radius) * 180;
       p.vy -= (1 - d / radius) * 120;
     }
@@ -529,7 +530,11 @@ export class Game {
       else if (e.y > this.level.fgH * this.th + 160) e.dead = true;
     }
     updateProjectiles(this);
+    // Dying objects are unlinked from everything else, like level::remove_object,
+    // so gates/sensors that count them re-evaluate and can fire their links.
+    const gone = new Set(this.entities.filter((e) => e.dead));
     this.entities = this.entities.filter((e) => !e.dead);
+    if (gone.size) for (const e of this.entities) if (e.links.length) e.links = e.links.filter((l) => !gone.has(l));
     this.refreshSolids();
   }
 

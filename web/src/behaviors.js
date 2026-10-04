@@ -359,7 +359,10 @@ function wall(big) {
       g.effect('EXPLODE1', e.x + 15, e.y - 7);
       if (big) { g.effect('EXPLODE1', e.x - 15, e.y - 22); g.effect('EXPLODE1', e.x, e.y - 20); }
       g.sound('hwall', e.x, e.y);
-      g.explode(e.x, e.y - 12, big ? 110 : 50, big ? 40 : 20, false, true);
+      // Original hurt_radius: hwall x+15*dir,y-7 r=50 m=60 ; big_wall x,y-15 r=110 m=120.
+      // The blast damages the neighbouring walls, so the whole linked floor goes up at once.
+      if (big) g.explode(e.x, e.y - 15, 110, 120, false, false, e);
+      else g.explode(e.x + 15 * e.dir, e.y - 7, 50, 60, false, false, e);
       return false;
     }
     return true;
