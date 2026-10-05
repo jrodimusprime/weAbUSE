@@ -42,9 +42,41 @@ Port: `web/src/*.js` (plain ES modules). Serve `web/` and hard-reload after edit
 - **Fire delays** are the original `fire_delay1` tick counts
   (cop.cpp ufuns): MGUN 3, PLASMA 2, GRENADE/FIREBOMB/ROCKET/DFRIS 6,
   LSABER 1 (× 1/15 s).
+- **Level playthrough audit**: loaded levels 1–21 and diffed every spawned
+  `ai_fun` against the port — all object types now have behaviours except the
+  bosses (`rob1_ai`, `boss_ai`, `end_game_ai`).
+- **Environment objects** (levels 1–21), each ported from the original Lisp/C:
+  - `mover_ai` — compiled C `mover_ai` (cop.cpp): drags its second linked
+    object towards the first link over `aitype` ticks, then hands it off.
+  - `pusher_ai` — general.lsp: shoves the *nearest player* (`(bg)`, clisp.cpp
+    case 4/22) along its direction by `pusher_speed` per tick when its switch
+    is on.
+  - `holder_ai` — general.lsp: pins its first link at an offset from the
+    second; optional enable switch; dies with 0/1 links.
+  - `block_ai` — duong.lsp: hp-30 destructible brick, crumble sound + bexplo
+    sequence when destroyed; `can_block` objects are now solid (refreshSolids).
+  - `step_ai` — ladder.lsp: step appears while its switch is ON
+    (`step_gone` is an empty frame, so it stops blocking).
+  - `switch_delay_ai` — switch.lsp: press to toggle, auto-resets after 14 ticks.
+  - `death_re_ai` — switch.lsp: spawns a fresh copy of its template object
+    wherever a watched object dies.
+  - `lhold_ai` — common.lsp: light-holder follows its linked object and drags
+    the light with it.
+  - `next_level_top_ai` — people.lsp: casts down to record the floor offset.
+  - `latter_ai` — ladder.lsp: climb regions are computed once at level load
+    (the per-tick focus snap is already covered by the player's climbing code).
 
 ## In progress / next
 
+0. **Bosses / ending** (the only missing behaviours):
+   - `rob1_ai` (jugger.lsp, 23 objects, levels 16–17) — cleaner robot:
+     hide/appear via fade_count, walk with `try_move`/`can_see`, push_char,
+     die into EXPLODE1 chain, C++ `push_char` semantics.
+   - `boss_ai` + `boss_fire` (ant.lsp, 2 objects, level 21) — fade in/out,
+     taunt, fire through the barrel with `can_see`, teleport between linked
+     objects, `request_end_game` when dead.
+   - `end_game_ai` (startup.lsp) — advances its 9-frame pipe sequence when
+     activated, then requests the end game.
 1. **Grenades** (guns.lsp type 2): original is `set_course angle 20` plus the
    creator's full velocity, with gravity from the GRENADE object def and the
    grenade's own ai/fuse. Port uses speed 13, gravity 2, life 40 — replace

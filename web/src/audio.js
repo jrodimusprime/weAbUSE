@@ -5,7 +5,7 @@ const FILES = {
   mgun: 'shotgn31', plasma: 'plasma03', throw: 'throw01', rocket: 'rocket02', explode: 'explod02',
   enemyshot: 'plasma02', antdie: 'adie02', antscare: 'alien01', antland: 'aland01', antslash: 'aslash01',
   health: 'health01', ammo: 'ammo01', spring: 'spring03', swish: 'swish01', switch: 'switch01', tick: 'timerfst',
-  hwall: 'crmble01', teleport: 'telept01', die: 'pldeth02',
+  hwall: 'crmble01', crumble: 'crmble01', teleport: 'telept01', die: 'pldeth02',
 };
 
 export class Audio {

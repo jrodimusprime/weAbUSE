@@ -357,7 +357,12 @@ export class Game {
     for (const e of this.entities) {
       if (e.dead) continue;
       if (e.a.solidRect) { this.solids.push({ ...e.a.solidRect, e }); continue; }
-      if (!SOLID_AI.has(e.ai) || e.state === 'blocking') continue;
+      const canBlock = e.def.flags.get('can_block') === 'T';
+      if (!(SOLID_AI.has(e.ai) || canBlock)) continue;
+      if (SOLID_AI.has(e.ai) && e.state === 'blocking') continue;
+      // can_block objects (BLOCK, STEP, ROB1...) use per-frame art: states like
+      // "step_gone" / "rob_hiding" draw an empty frame and don't block.
+      if (canBlock && !SOLID_AI.has(e.ai) && (e.state === 'running' || e.state === 'dieing' || e.state === 'rob_hiding')) continue;
       const r = this.rectOf(e);
       if (r) this.solids.push({ ...r, e });
     }

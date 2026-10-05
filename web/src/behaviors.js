@@ -668,6 +668,141 @@ function platform(e, g) {
   return true;
 }
 
+// ---- common.lsp / general.lsp / duong.lsp environment objects ----
+
+// OBJ_MOVER — the compiled C mover_ai (cop.cpp): the mover drags its second
+// linked object towards its first link over `aitype` ticks, then hands it off.
+function mover(e) {
+  if (e.links.length !== 2) return true;
+  const [dest, carried] = e.links;
+  if (e.aistate < 2) {
+    e.links = [dest];
+    if (!dest.links.includes(carried)) dest.links.push(carried);
+    dest.aistate = dest.aitype;
+  } else {
+    e.aistate--;
+    const frames = e.aitype || 20; // mover_cons: (set_aitype 20)
+    carried.x = dest.x - Math.trunc(((dest.x - e.x) * e.aistate) / frames);
+    carried.y = dest.y - Math.trunc(((dest.y - e.y) * e.aistate) / frames);
+  }
+  return true;
+}
+
+// PUSHER — while its switch is on and the player touches it, shoves the player
+// along its direction by pusher_speed per tick. In the original, `touching_bg`
+// tests overlap with the nearest player and `(bg)` is that player (clisp.cpp
+// case 4 / case 22), so the pusher pushes the player, not a block.
+function pusher(e, g) {
+  if (!activated(e)) return true;
+  e.nextPicture();
+  const r = g.rectOf(e), pr = g.playerRect();
+  if (r && r.x0 <= pr.x1 && r.x1 >= pr.x0 && r.y0 <= pr.y1 && r.y1 >= pr.y0) {
+    g.moveX(g.player, (e.dir > 0 ? 1 : -1) * (e.aistate || 4));
+  }
+  return true;
+}
+
+// OBJ_HOLDER — holds its first linked object at an (xvel, yvel) offset from the
+// second linked object; the third link is an optional enable switch.
+function holder(e) {
+  const pin = (ref) => {
+    e.links[0].x = ref.x + e.xvel;
+    e.links[0].y = ref.y + e.yvel;
+    e.x = ref.x + e.xvel;
+    e.y = ref.y + e.yvel;
+  };
+  switch (e.links.length) {
+    case 2: pin(e.links[1]); return true;
+    case 3:
+      if (e.links[2].aistate !== 0) { pin(e.links[1]); return true; }
+      return e.xacel !== 1; // xacel==1 removes the holder until re-enabled
+    case 4: case 5: case 6: return true;
+    default: return false; // 0 or 1 links: die, like the original
+  }
+}
+
+// BLOCK — destructible scenery brick (hp 30, can_block); crumbles when destroyed.
+function block(e, g) {
+  if (e.hp <= 0) {
+    if (e.state !== 'dieing') { g.sound('crumble', e.x, e.y); e.setState('dieing'); return true; }
+    return e.nextPicture();
+  }
+  return true;
+}
+
+// STEP — a step that exists while its switch is OFF (running = "step_gone").
+function step(e) {
+  if (e.links.length === 0 || link0(e).aistate !== 0) e.setState('stopped');
+  else e.setState('running');
+  return true;
+}
+
+// SWITCH_DELAY — press to toggle on, auto-resets after reset_time ticks
+// (switch_delay_cons: (setq reset_time 14)).
+function switchDelay(e, g) {
+  e.a.reset ??= 14;
+  switch (e.aistate) {
+    case 0:
+      e.nextPicture();
+      if (Math.abs(g.player.x - e.x) < 20 && Math.abs(g.player.y - e.y) < 30 && g.pressed('action')) {
+        g.sound('switch', e.x, e.y);
+        e.setState('running');
+        e.aistate = 1;
+      }
+      break;
+    case 1: if (!g.pressed('action')) e.aistate = 2; break;
+    case 2:
+      if (e.stateTime > e.a.reset) { g.sound('switch', e.x, e.y); e.setState('stopped'); e.aistate = 0; }
+      break;
+    default:
+  }
+  return true;
+}
+
+// DEATH_RESPAWNER — when a watched linked object dies, spawn a fresh one of the
+// first link's type where it fell. (Watched by reference: the engine unlinks
+// dead objects at the end of the tick, before this would see them in links.)
+function deathRespawner(e, g) {
+  e.a.watch ??= e.links.slice(1);
+  const watch = e.a.watch;
+  for (const w of watch) {
+    if (w.dead || w.state === 'dead' || w.state === 'blown_back_dead') {
+      g.spawn(link0(e).type, w.x, w.y);
+      watch.splice(watch.indexOf(w), 1);
+      break;
+    }
+  }
+  return true;
+}
+
+// LIGHTHOLD — follows its linked object and drags its light along.
+function lightHold(e, g) {
+  if (e.links.length) {
+    const t = link0(e);
+    e.x = t.x;
+    const img = g.spriteOf(e);
+    e.y = t.y - Math.floor((img?.h || 0) / 2);
+  }
+  if (e.lights && e.lights.length === 1) { e.lights[0].x = e.x; e.lights[0].y = e.y; }
+  return true;
+}
+
+// NEXT_LEVEL_TOP — casts down up to 100 px to record how far the floor is.
+function nextLevelTop(e, g) {
+  if (!e.a.init) {
+    const oy = e.y;
+    g.moveEntity(e, 0, 100);
+    e.a.floorYoff = e.y - oy;
+    e.y = oy;
+    e.a.init = true;
+  }
+  return true;
+}
+
+// LADDER — the climbable region is already computed once at level load
+// (game.js builds this.ladders from these entities); nothing to run per tick.
+const ladder = () => true;
+
 export const behaviors = {
   ant_ai: ant,
   flyer_ai: flyer,
@@ -705,6 +840,16 @@ export const behaviors = {
   jug_ai: jugger,
   exp_ai: effect,
   animate_ai: (e) => { e.nextPicture(); return true; },
+  mover_ai: mover,
+  pusher_ai: pusher,
+  holder_ai: holder,
+  block_ai: block,
+  step_ai: step,
+  switch_delay_ai: switchDelay,
+  death_re_ai: deathRespawner,
+  lhold_ai: lightHold,
+  next_level_top_ai: nextLevelTop,
+  latter_ai: ladder,
   ...items,
   ...gates,
 };
