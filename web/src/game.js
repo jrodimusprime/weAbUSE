@@ -14,12 +14,19 @@ const STEP = 1 / 60;
 const TICK = 1 / 15; // original game logic rate
 
 // Original physics constants are per 15 Hz tick; converted to px/s here.
-const RUN_SPEED = 120;
-const JUMP_VEL = 225;
-const GRAVITY = 675;
-const MAX_FALL = 420;
+// DARNEL abilities (people.lsp) + engine tick (objects.cpp): run_top_speed 9,
+// jump_yvel -15, start_accel 8, stop_accel 9, jump_top_speed 10.
+// Vertical motion uses the engine's exact fixed-point gravity (see tick()):
+// 200/256 px per tick^2 with the cop_mover terminal-fall cap.
+const RUN_SPEED = 135; // 9 px/tick
+const JUMP_VEL = 225; // 15 px/tick
+const AIR_SPEED = 150; // jump_top_speed 10 px/tick
+const ACCEL = 1800; // start_accel 8 px/tick^2
+const DECEL = 1350; // stop_accel 9 px/tick^2
 const HALF_W = 6;
-const BODY_H = 36;
+// DARNEL's locomotion frames are 27-30 px tall (cop.spe); the collision body
+// matches the art like the original's per-frame boundary (not 36).
+const BODY_H = 29;
 const CLIMB_SPEED = 90;
 
 const EXTRA_DEFS = [
@@ -116,6 +123,7 @@ export class Game {
       x: 0, y: 0, vx: 0, vy: 0, dir: 1, ground: false, anim: 0, state: 'stopped', aim: 0, aimAngle: 0,
       hp: 100, maxhp: 100, weapon: 'MGUN', ammo: { MGUN: 100 }, owned: new Set(['MGUN']), cooldown: 0,
       dead: false, deadTime: 0, climbing: false, ladderExit: null,
+      yacel: 0, fyacel: 0, fyvel: 0,
     };
   }
 
@@ -195,6 +203,7 @@ export class Game {
     }
     Object.assign(p, {
       x, y, vx: 0, vy: 0, hp: p.maxhp, dead: false, deadTime: 0, climbing: false, ladderExit: null, cooldown: 0,
+      yacel: 0, fyacel: 0, fyvel: 0,
     });
   }
 
@@ -294,9 +303,11 @@ export class Game {
     for (let i = 0; i < nx; i++) {
       const x = e.x + sx * Math.min(1, Math.abs(dx) - i);
       if (!this.boxHits(x, e.y, hw, bh, e)) { e.x = x; continue; }
+      // Same stair-climb height as the player: the original mover walks
+      // entities up the level's steps via the boundary setback.
       let up = 1;
-      while (up <= 5 && this.boxHits(x, e.y - up, hw, bh, e)) up++;
-      if (up <= 5) { e.x = x; e.y -= up; } else { out.blockedX = true; break; }
+      while (up <= 16 && this.boxHits(x, e.y - up, hw, bh, e)) up++;
+      if (up <= 16) { e.x = x; e.y -= up; } else { out.blockedX = true; break; }
     }
     const ny = Math.ceil(Math.abs(dy)), sy = Math.sign(dy);
     for (let i = 0; i < ny; i++) {
@@ -521,6 +532,18 @@ export class Game {
     this.tickCount = (this.tickCount || 0) + 1;
     if (this.msgTime > 0) this.msgTime--;
     if (this.helpTime > 0 && --this.helpTime === 0) { this.onHelp?.(''); this.helpVoice = null; }
+    // The original's vertical physics, exactly as objects.cpp tick() plus the
+    // cop_mover terminal-fall cap: fixed-point gravity 200/256 px/tick^2
+    // (fyacel) with carry into yacel, then velocity += yacel + fractional
+    // carry. Runs at the 15 Hz tick; px/s = 15 * px/tick.
+    if (p && !p.climbing && !(this.rightDown && p.power === 'FLY')) {
+      if (p.vy > 150) { p.vy -= 15; p.yacel = 0; p.fyacel = 0; } // cop_mover: >10 px/tick
+      const fya = (p.yacel || 0) >= 0 ? (p.fyacel || 0) + 200 : (p.fyacel || 0) - 200;
+      p.yacel = (p.yacel || 0) + (fya >> 8);
+      p.fyacel = fya & 255;
+      p.fyvel = ((p.fyvel || 0) + p.fyacel) & 255;
+      p.vy += (p.yacel + (p.fyvel >> 8)) * 15;
+    }
     this.applyArea();
     for (const e of this.entities) { e.px = e.x; e.py = e.y; }
     for (const e of this.entities.slice()) {
@@ -578,7 +601,7 @@ export class Game {
 
     if (p.dead) {
       p.deadTime -= dt;
-      p.vy = Math.min(MAX_FALL, p.vy + GRAVITY * dt);
+      // Gravity for the dead body comes from the tick-based physics below.
       this.moveY(p, p.vy * dt);
       if (p.deadTime <= 0) { p.power = null; this.respawn(); }
       return;
@@ -595,7 +618,11 @@ export class Game {
     if (!ladder) p.climbing = false;
 
     if (p.climbing) {
-      if (jump) { p.climbing = false; p.vy = -JUMP_VEL; } else {
+      if (jump) {
+        p.climbing = false;
+        p.vy = -JUMP_VEL;
+        p.yacel = 0; p.fyacel = 0; p.fyvel = 0;
+      } else {
         p.vx = 0; p.vy = 0;
         p.x += (((ladder.x0 + ladder.x1) / 2) - p.x) * Math.min(1, dt * 10);
         const dy = ((down ? 1 : 0) - (up ? 1 : 0)) * CLIMB_SPEED * dt;
@@ -617,15 +644,20 @@ export class Game {
       const target = (right ? 1 : 0) - (left ? 1 : 0);
       // Right mouse activates a held power; god mode always grants the FAST run.
       const power = (this.rightDown && p.power) || (this.god ? 'FAST' : null);
+      // Original mover: the same start_accel applies on the ground and in the
+      // air; air speed is capped at jump_top_speed (10 px/tick).
       const run = RUN_SPEED * (power === 'FAST' ? 1.7 : 1);
-      const accel = p.ground ? 1400 : 700;
-      if (target) { p.dir = target; p.vx += target * accel * dt; p.vx = Math.max(-run, Math.min(run, p.vx)); }
-      else p.vx -= Math.sign(p.vx) * Math.min(Math.abs(p.vx), 1800 * dt);
+      const cap = p.ground ? run : AIR_SPEED;
+      if (target) { p.dir = target; p.vx += target * ACCEL * dt; p.vx = Math.max(-cap, Math.min(cap, p.vx)); }
+      else p.vx -= Math.sign(p.vx) * Math.min(Math.abs(p.vx), DECEL * dt);
 
       if (power === 'FLY') p.vy = ((down ? 1 : 0) - (up || jump ? 1 : 0)) * 110;
-      else {
-        if (jump && p.ground) { p.vy = -JUMP_VEL; p.ground = false; }
-        p.vy = Math.min(MAX_FALL, p.vy + GRAVITY * dt);
+      else if (jump && p.ground) {
+        // jump_yvel -15 (px/tick); the fixed-point state is reset like the
+        // original's landing zero-out so the rise is exact.
+        p.vy = -JUMP_VEL;
+        p.ground = false;
+        p.yacel = 0; p.fyacel = 0; p.fyvel = 0;
       }
 
       const wasGround = p.ground;
@@ -703,20 +735,30 @@ export class Game {
     for (let i = 0; i < n; i++) {
       const nx = p.x + s * Math.min(1, Math.abs(dx) - i);
       if (!this.boxHits(nx, p.y, HALF_W, BODY_H, null)) { p.x = nx; continue; }
+      // The original has no fixed step-up cap: the boundary walk in the C++
+      // lets the player run up the level's staircase steps (up to ~13 px).
+      // 16 px reproduces that climb while walls taller than the body still stop.
       let up = 1;
-      while (up <= 8 && this.boxHits(nx, p.y - up, HALF_W, BODY_H, null)) up++;
-      if (up <= 8) { p.x = nx; p.y -= up; } else { p.vx = 0; break; }
+      while (up <= 16 && this.boxHits(nx, p.y - up, HALF_W, BODY_H, null)) up++;
+      if (up <= 16) { p.x = nx; p.y -= up; } else { p.vx = 0; break; }
     }
   }
 
   moveY(p, dy) {
     const n = Math.ceil(Math.abs(dy));
     const s = Math.sign(dy);
+    // With tick-based gravity, vy is 0 on most frames; re-test the feet edge
+    // instead of clearing the grounded flag (otherwise the idle pose flickers).
+    if (n === 0) { p.ground = this.verticalHits(p, p.y + 1, HALF_W, BODY_H, true); return; }
     p.ground = false;
     for (let i = 0; i < n; i++) {
       const ny = p.y + s * Math.min(1, Math.abs(dy) - i);
       if (!this.boxHits(p.x, ny, HALF_W, BODY_H, null)) { p.y = ny; continue; }
-      if (s > 0) p.ground = true;
+      if (s > 0) {
+        p.ground = true;
+        // The original zeroes the fixed-point state when the fall is blocked.
+        p.yacel = 0; p.fyacel = 0; p.fyvel = 0;
+      }
       p.vy = 0;
       break;
     }
@@ -784,7 +826,14 @@ export class Game {
     if (p.justFired) r.setBright(1.8);
     if (body) this.blit(body, p.dead ? 'dead' : p.state, p.anim, p.x, p.y, p.dir);
     const top = !p.dead && this.assets.defs.get(WEAPONS[p.weapon]?.top);
-    if (top && !p.climbing) this.blit(top, 'stopped', p.aim, p.dir > 0 ? p.x : p.x + 4, p.y, 1);
+    if (top && !p.climbing) {
+      // cop.cpp top_draw: the chest rides at bot.y + 29 - picture_height, so it
+      // bobs with the breathing frames (the stopped frames are 28-30 px tall).
+      const bf = body.states.get(p.state) || body.states.get('stopped');
+      const bimg = bf ? this.assets.sprite(body.file, bf[Math.floor(p.anim) % bf.length]) : null;
+      const topY = p.y + 29 - (bimg?.h || 29);
+      this.blit(top, 'stopped', p.aim, p.dir > 0 ? p.x : p.x + 4, topY, 1);
+    }
     if (p.justFired) { r.setBright(1); p.justFired = false; }
 
     r.setLit(false);

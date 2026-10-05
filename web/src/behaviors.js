@@ -410,11 +410,16 @@ const HINT_VOICE = [
 
 function trainMessage(e, g) {
   if (e.aistate === 0) {
-    if (activated(e)) { g.showHelp(HINTS[e.aitype] ?? '', HINT_VOICE[e.aitype]); e.aistate = 1; }
+    if (activated(e)) {
+      // Original train_ai (general.lsp): the voice-over plays once when the
+      // hint activates; the per-tick calls below only refresh the text.
+      g.showHelp(HINTS[e.aitype] ?? '', HINT_VOICE[e.aitype]);
+      e.aistate = 1;
+    }
     return true;
   }
   if (e.aistate === 100) return false;
-  g.showHelp(HINTS[e.aitype] ?? '', HINT_VOICE[e.aitype]);
+  g.showHelp(HINTS[e.aitype] ?? '');
   e.aistate++;
   return true;
 }
