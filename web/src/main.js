@@ -1,15 +1,19 @@
 import { Game } from './game.js';
 import { WEAPON_ORDER } from './weapons.js';
 import { readPalette, T } from './spec.js';
-
-const LEVELS = Array.from({ length: 22 }, (_, i) => `level${String(i).padStart(2, '0')}.spe`);
+import { LEVELS, toggleDemo } from './demo.js';
 
 const select = document.getElementById('level');
 for (const l of LEVELS) select.add(new Option(l, l));
 
 const godBtn = document.getElementById('god');
+const demoBtn = document.getElementById('demo');
 const game = new Game(document.getElementById('c'), document.getElementById('hud'));
 window.game = game;
+
+// Demo sweep: autopilot playthrough of every level at 2x, starting at level 0.
+demoBtn.addEventListener('click', () => { toggleDemo(game, demoBtn, select); demoBtn.blur(); });
+addEventListener('keydown', (e) => { if (e.code === 'KeyD' && !e.repeat && !game.demo) toggleDemo(game, demoBtn, select); });
 
 // On mobile, tapping the canvas acts as the mouse (aim + fire) and the buttons
 // below the screen drive movement, use, special power and the lights.

@@ -65,8 +65,21 @@ export class Game {
     this.acc = 0;
     this.tickAcc = 0;
     this.rng = 12345;
+    // Test-harness demo mode: simulation speed multiplier and the autopilot bot.
+    this.speed = 1;
+    this.demo = false;
+    this.bot = null;
+    this.demoStartTick = 0;
+    this.demoTimeoutTicks = 0;
+    this.onDemoStop = null;
+    this.onDemoTimeout = null;
 
     addEventListener('keydown', (e) => {
+      // During the demo the bot owns the input; Esc stops the sweep.
+      if (this.demo) {
+        if (e.code === 'Escape') this.onDemoStop?.();
+        return;
+      }
       this.keys.add(e.code);
       if (e.code.startsWith('Arrow') || e.code === 'Space') e.preventDefault();
       if (e.code === 'KeyG' && !e.repeat) this.setGod(!this.god);
@@ -210,7 +223,7 @@ export class Game {
   frame(now) {
     const dt = Math.min(0.1, (now - this.last) / 1000);
     this.last = now;
-    this.acc += dt;
+    this.acc += dt * this.speed;
     while (this.acc >= STEP) { this.update(STEP); this.acc -= STEP; }
     this.render();
     this.updateHud();
@@ -521,6 +534,7 @@ export class Game {
   update(dt) {
     const p = this.player;
     if (!p || !this.level) return;
+    if (this.bot) this.bot.step(this);
     this.updatePlayer(dt);
     this.tickAcc += dt;
     while (this.tickAcc >= TICK) { this.tickAcc -= TICK; this.tick(); }
