@@ -1102,19 +1102,25 @@ export class PpoTrainer {
     }
     this.prevPosX = p.x;
     this.prevPosY = p.y;
-    // Interaction credit: the previous decision pressed down while touching a
-    // teleporter/platform/switch — reward the action itself, not just the
-    // state. Teleporters pay more: their graph distance is already tiny while
-    // standing on them, so the press itself must carry the signal.
+    // Interaction credit: the previous decision pressed down. Tiny credit for
+    // trying the action key at all, a proximity ramp near interactables, and a
+    // bigger bonus when actually touching one (teleporters pay most: their
+    // graph distance is already tiny while standing on them, so the press
+    // itself must carry the signal).
     {
       const { down } = actParts(this.lastAct);
       if (down) {
+        r += 0.03; // reward trying the action key
+        let near = null, bd = Infinity;
         for (const e of g.entities) {
           if (e.dead || !INTERACT_AI.has(e.ai)) continue;
-          if (g.touchesPlayer(e)) {
-            r += (e.ai === 'tp2_ai' || e.ai === 'tpd_ai') ? 2 : 1;
-            break;
-          }
+          const d = Math.abs(e.x - p.x) + Math.abs(e.y - p.y);
+          if (d < bd) { bd = d; near = e; }
+        }
+        if (near && g.touchesPlayer(near)) {
+          r += (near.ai === 'tp2_ai' || near.ai === 'tpd_ai') ? 2 : 1;
+        } else if (bd < 80) {
+          r += 0.2; // pressing down near an interactable is on the right track
         }
       }
     }
