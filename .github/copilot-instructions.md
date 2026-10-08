@@ -31,6 +31,13 @@ After any visual change, take a screenshot (full page, not just an element) and
 confirm it renders correctly before reporting done. Check element bounding boxes
 for unexpected sizes.
 
+## RULE 4 (key bindings): never clash with game inputs
+Never add keyboard shortcuts that overlap the game's existing controls:
+arrows/WASD (move), Space/Up (jump), Down/E (use/action), 1-7 or wheel
+(weapons), mouse buttons (fire/special), L (lights), G (god). New hotkeys must
+use unused keys (e.g. F-keys) or be button-only. A clash reads as a gameplay
+bug (e.g. pressing D started the demo while moving right).
+
 ## Project notes
 - Web port lives in `web/` (plain ES modules, no build step).
 - Serve with `cd web && python3 -m http.server 8000` → http://localhost:8000/

@@ -19,7 +19,6 @@ const startDemo = () => {
   toggleDemo(game, demoBtn, select);
 };
 demoBtn.addEventListener('click', () => { startDemo(); demoBtn.blur(); });
-addEventListener('keydown', (e) => { if (e.code === 'KeyD' && !e.repeat && !game.demo) startDemo(); });
 
 // PPO trainer: trains a policy in-page; the demo uses it once saved.
 const ppoBtn = document.getElementById('ppo');

@@ -15,9 +15,9 @@
 // PPO: clipped surrogate + GAE + entropy bonus, Adam, separate actor/critic.
 // Weights persist to localStorage so the trained policy can drive the demo.
 
-export const PPO_KEY = 'abuse.ppo.v2'; // v2: 96-wide hidden layer (faster than v1's 128)
-export const BEST_KEY = 'abuse.ppo.bestrun';
-export const HIST_KEY = 'abuse.ppo.besthistory';
+export const PPO_KEY = 'abuse.ppo.v3'; // v3: trained with the fixed compass (door-gap route)
+export const BEST_KEY = 'abuse.ppo.bestrun2';
+export const HIST_KEY = 'abuse.ppo.besthistory2';
 
 const ACTS = 24;            // move(-1..1) x jump x down x fire
 const WIN_C = 20, WIN_R = 12, CH = 4;
@@ -691,6 +691,16 @@ function fallbackDist(g, nextNum = null) {
       if (viaTp < best) best = viaTp;
     }
   }
+  // Frontier term: the endpoint of each saved best run is where the real
+  // compass worked, so moving toward it beats wall-hugging plateaus.
+  try {
+    const recs = [JSON.parse(localStorage.getItem(BEST_KEY)), ...JSON.parse(localStorage.getItem(HIST_KEY) || '[]')];
+    for (const h of recs) {
+      if (h && Array.isArray(h.end) && isFinite(h.dist)) {
+        best = Math.min(best, man(h.end[0], h.end[1]) + h.dist);
+      }
+    }
+  } catch { /* best-effort */ }
   // no zone matches the requested level: use any exit
   if (!anyGoal && nextNum !== null) return fallbackDist(g, null);
   return best;
@@ -946,6 +956,7 @@ export class PpoTrainer {
       level: this.levels[this.levelIdx],
       dist: Math.round(this.recBestDist * 10) / 10,
       acts: this.recActs,
+      end: [Math.round(this.g.player.x), Math.round(this.g.player.y)], // frontier for the fallback compass
       episodes: this.episodes,
       updates: this.updates,
       t: Date.now(),
@@ -1025,7 +1036,7 @@ export class PpoTrainer {
     this.epNoProg++;
     const sig = Math.floor(p.x / 40) * 1000 + Math.floor(p.y / 40);
     if (sig !== this.epSig) { this.epSig = sig; this.epNoProg = 0; }
-    if (this.epNoProg > 15 * 90 * 4) { this.endEpisode(-3, true); return; } // 90 sim-seconds stalled
+    if (this.epNoProg > 15 * 45 * 4) { this.endEpisode(-3, true); return; } // 45 sim-seconds stalled
     if (this.episodeSteps > 15 * 600 * 4) { this.endEpisode(-3, true); return; } // 600 sim-seconds absolute cap
     g.update(1 / 60);
   }
