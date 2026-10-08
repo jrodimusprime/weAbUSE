@@ -712,6 +712,9 @@ const INTERACT_AI = new Set([
   'tp2_ai', 'tpd_ai', 'platform_ai', 'switcher_ai', 'restart_ai', 'strap_door_ai', 'sdoor_ai', 'next_level_ai',
 ]);
 
+// Breakable walls (original: "Shoot hidden walls to destroy them", wall() explodes at hp<=0).
+const WALL_AI = new Set(['hwall_ai', 'big_wall_ai']);
+
 export class PpoTrainer {
   constructor(game, levelFiles, onStatus) {
     this.g = game;
@@ -875,6 +878,7 @@ export class PpoTrainer {
     this.enemyHp = new Map();
     this.prevPosX = null;
     this.prevPosY = null;
+    this.lastWallCount = this.g.entities.filter((e) => !e.dead && WALL_AI.has(e.ai)).length;
     this.resetting = false;
   }
 
@@ -1071,18 +1075,25 @@ export class PpoTrainer {
     this.lastEnemyCount = enemyCount;
     // Dense combat credit: reward each point of damage dealt since the last
     // decision, not just kills (a kill's remaining hp dies with the entity,
-    // so it is not double-counted here).
-    let dmg = 0;
+    // so it is not double-counted here). Breakable walls pay their own rate
+    // and a bonus on destruction (wall puzzles).
+    let dmg = 0, wallDmg = 0;
+    const hpNow = new Map();
     for (const e of g.entities) {
-      if (e.dead || !e.shootable || !ENEMY_AI.has(e.ai)) continue;
+      if (e.dead || (!ENEMY_AI.has(e.ai) && !WALL_AI.has(e.ai))) continue;
       const prev = this.enemyHp.get(e);
-      if (prev !== undefined && e.hp < prev) dmg += prev - e.hp;
+      if (prev !== undefined && e.hp < prev) {
+        if (ENEMY_AI.has(e.ai)) dmg += prev - e.hp;
+        else wallDmg += prev - e.hp;
+      }
+      hpNow.set(e, e.hp);
     }
-    this.enemyHp.clear();
-    for (const e of g.entities) {
-      if (!e.dead && e.shootable && ENEMY_AI.has(e.ai)) this.enemyHp.set(e, e.hp);
-    }
-    if (dmg > 0) r += Math.min(0.4, dmg * 0.02);
+    this.enemyHp = hpNow;
+    if (dmg > 0) r += Math.min(0.8, dmg * 0.04);
+    if (wallDmg > 0) r += Math.min(1.2, wallDmg * 0.06);
+    const wallCount = g.entities.filter((e) => !e.dead && WALL_AI.has(e.ai)).length;
+    if (wallCount < this.lastWallCount) r += 3 * (this.lastWallCount - wallCount);
+    this.lastWallCount = wallCount;
     // Teleportation: an instantaneous position jump means a teleport actually
     // happened — credit the event so using teleporters is clearly good.
     if (this.prevPosX !== null) {
