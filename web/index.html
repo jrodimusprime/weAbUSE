@@ -57,6 +57,10 @@
       <button id="demo" type="button">Demo: play 0-21 at 2x</button>
       <button id="ppo" type="button">Train PPO</button>
       <button id="pause" type="button" disabled>Pause</button>
+      <label>Show a run every <select id="showEvery">
+        <option value="10">10</option><option value="25">25</option><option value="50" selected>50</option>
+        <option value="100">100</option><option value="0">never</option>
+      </select> updates</label>
       <select id="bestRunSel"></select>
       <button id="bestRun" type="button">Replay best run</button>
       <span id="hud"></span>

@@ -27,6 +27,9 @@ const pauseBtn = document.getElementById('pause');
 const replayBtn = document.getElementById('bestRun');
 const bestRunSel = document.getElementById('bestRunSel');
 let ppoTrainer = null;
+// How often training pauses to play one run of the current policy on screen.
+const showEverySel = document.getElementById('showEvery');
+showEverySel.addEventListener('change', () => { if (ppoTrainer) ppoTrainer.showEvery = +showEverySel.value; showEverySel.blur(); });
 const trainingActive = () => !!(ppoTrainer?.running || ppoTrainer?.paused);
 const demoUsesPpo = () => { demoBtn.textContent = hasTrainedPolicy() ? 'Demo: play 0-21 at 2x (PPO)' : 'Demo: play 0-21 at 2x'; };
 const bestEntries = () => {
@@ -53,6 +56,7 @@ const startTraining = () => {
     refreshPauseBtn();
     if (!trainingActive()) ppoBtn.textContent = 'Train PPO';
   });
+  ppoTrainer.showEvery = +showEverySel.value;
   ppoBtn.textContent = 'Stop training';
   ppoTrainer.start();
   refreshPauseBtn();
