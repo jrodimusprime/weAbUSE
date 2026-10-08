@@ -1122,7 +1122,7 @@ export class PpoTrainer {
     }
     this.prevDist = effDist;
     const enemyCount = g.entities.filter((e) => !e.dead && e.shootable && ENEMY_AI.has(e.ai)).length;
-    if (enemyCount < this.lastEnemyCount) r += 1.5 * (this.lastEnemyCount - enemyCount);
+    if (enemyCount < this.lastEnemyCount) r += 3 * (this.lastEnemyCount - enemyCount);
     this.lastEnemyCount = enemyCount;
     // Dense combat credit: reward each point of damage dealt since the last
     // decision, not just kills (a kill's remaining hp dies with the entity,
@@ -1140,7 +1140,7 @@ export class PpoTrainer {
       hpNow.set(e, e.hp);
     }
     this.enemyHp = hpNow;
-    if (dmg > 0) r += Math.min(0.8, dmg * 0.04);
+    if (dmg > 0) r += Math.min(1.2, dmg * 0.06);
     if (wallDmg > 0) r += Math.min(1.2, wallDmg * 0.06);
     const wallCount = g.entities.filter((e) => !e.dead && WALL_AI.has(e.ai)).length;
     if (wallCount < this.lastWallCount) r += 3 * (this.lastWallCount - wallCount);
@@ -1172,6 +1172,18 @@ export class PpoTrainer {
           r += (near.ai === 'tp2_ai' || near.ai === 'tpd_ai') ? 2 : 1;
         } else if (bd < 80) {
           r += 0.2; // pressing down near an interactable is on the right track
+        }
+      }
+    }
+    // Trigger discipline with dense signal: firing while a visible enemy is in
+    // range pays every decision, so sustained fire is rewarded between hits.
+    {
+      const { fire } = actParts(this.lastAct);
+      if (fire) {
+        for (const e of g.entities) {
+          if (e.dead || !e.shootable || !ENEMY_AI.has(e.ai)) continue;
+          if (Math.abs(e.x - p.x) > 400 || Math.abs(e.y - p.y) > 260) continue;
+          if (g.sees(p.x, p.y - 15, e.x, e.y - 15)) { r += 0.05; break; }
         }
       }
     }
