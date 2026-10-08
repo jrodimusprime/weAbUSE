@@ -811,6 +811,7 @@ export class PpoTrainer {
     this.running = true;
     const g = this.g;
     this.prevNext = g.nextLevel;
+    g.audio.muted = true;      // training runs silently
     g.autoPause = true;
     g.demo = true;           // isolate real input while training
     g.speed = 1;
@@ -843,6 +844,7 @@ export class PpoTrainer {
     this.updating = null; // drop any partially-applied gradient rollout
     this.seed = null;     // drop any in-progress warm-start replay
     this.g.renderThrottle = 0;
+    this.g.audio.muted = false; // restore sound after training
     const g = this.g;
     g.autoPause = false;
     g.demo = false;
