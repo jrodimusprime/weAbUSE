@@ -599,13 +599,14 @@ export function applyAction(g, act, faceDir = 1) {
   else if (move > 0) g.keys.add('ArrowRight');
   if (jump) g.keys.add('Space');
   if (down) g.keys.add('ArrowDown');
-  // Aim at the nearest visible enemy; otherwise straight ahead.
+  // Aim at the nearest visible enemy; otherwise straight ahead. The window
+  // matches the weapons' effective range so long-range fire gets rewarded.
   const p = g.player;
   let target = null, best = Infinity;
   for (const e of g.entities) {
     if (e.dead || e.hidden || !e.shootable || !ENEMY_AI.has(e.ai)) continue;
     const dx = Math.abs(e.x - p.x), dy = Math.abs(e.y - p.y);
-    if (dx > 400 || dy > 260) continue;
+    if (dx > 600 || dy > 400) continue;
     if (!g.sees(p.x, p.y - 15, e.x, e.y - 15)) continue;
     const d = dx + dy;
     if (d < best) { best = d; target = e; }
@@ -1182,8 +1183,8 @@ export class PpoTrainer {
       if (fire) {
         for (const e of g.entities) {
           if (e.dead || !e.shootable || !ENEMY_AI.has(e.ai)) continue;
-          if (Math.abs(e.x - p.x) > 400 || Math.abs(e.y - p.y) > 260) continue;
-          if (g.sees(p.x, p.y - 15, e.x, e.y - 15)) { r += 0.05; break; }
+          if (Math.abs(e.x - p.x) > 600 || Math.abs(e.y - p.y) > 400) continue;
+          if (g.sees(p.x, p.y - 15, e.x, e.y - 15)) { r += 0.2; break; }
         }
       }
     }
