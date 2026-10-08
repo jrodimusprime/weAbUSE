@@ -715,6 +715,46 @@ const INTERACT_AI = new Set([
 // Breakable walls (original: "Shoot hidden walls to destroy them", wall() explodes at hp<=0).
 const WALL_AI = new Set(['hwall_ai', 'big_wall_ai']);
 
+// ---- best-run state checkpointing: the next run starts from the exact state
+// where the best run ended (player + entities + doors/switches), instead of
+// re-simulating the action script from spawn (which drifts). ----
+function snapshotState(g) {
+  const p = g.player;
+  return {
+    px: Math.round(p.x), py: Math.round(p.y), hp: p.hp,
+    weapon: p.weapon, owned: [...(p.owned || [])],
+    ammo: { ...(p.ammo || {}) }, // ammo is keyed by weapon name, not an array
+    power: p.power || null,
+    es: g.entities.map((e) => (e.dead ? null : {
+      x: Math.round(e.x), y: Math.round(e.y), aistate: e.aistate ?? 0,
+      hp: e.hp ?? 0, state: e.state, stateTime: e.stateTime ?? 0, dir: e.dir ?? 1,
+    })),
+  };
+}
+
+function restoreState(g, st) {
+  const p = g.player;
+  p.x = st.px; p.y = st.py; p.vx = 0; p.vy = 0;
+  p.hp = st.hp; p.dead = false; p.deadTime = 0;
+  p.weapon = st.weapon ?? 0;
+  p.owned = new Set(st.owned || []);
+  p.ammo = { ...(st.ammo || {}) };
+  p.power = st.power || null;
+  const ents = g.entities;
+  for (let i = 0; i < ents.length && i < (st.es || []).length; i++) {
+    const s = st.es[i];
+    const e = ents[i];
+    if (!s) { e.dead = true; continue; }
+    e.x = s.x; e.y = s.y; e.aistate = s.aistate; e.hp = s.hp;
+    e.stateTime = s.stateTime; e.dir = s.dir;
+    try { if (s.state) e.setState(s.state); } catch { e.state = s.state; }
+  }
+  g.entities = g.entities.filter((e) => !e.dead);
+  g.refreshSolids();
+}
+
+export { snapshotState, restoreState };
+
 export class PpoTrainer {
   constructor(game, levelFiles, onStatus) {
     this.g = game;
@@ -856,17 +896,18 @@ export class PpoTrainer {
     // starts until exploration finds a new best.
     const rec = loadBestRun();
     this.seed = null;
-    if (this.seedOk && rec && rec.level === this.levels[this.levelIdx] && rec.acts.length > 8
+    if (this.seedOk && rec && rec.level === this.levels[this.levelIdx] && (rec.acts.length > 8 || rec.state)
         && Math.random() < (this.seedStrike > 0 ? 0.35 : 0.75)) {
-      // Chunked replay: seedStep() in frame() runs it across ticks so the UI
-      // stays responsive and the status line can show progress. The best-run
-      // history is replayed in chronological order (worst first) because each
-      // script was recorded from the previous one's endpoint — chaining them
-      // reconstructs the frontier faithfully instead of desyncing from spawn.
-      const hist = loadBestHistory()
-        .filter((h) => h.level === rec.level && !(h.dist === rec.dist && h.acts.length === rec.acts.length))
-        .sort((a, b) => b.dist - a.dist); // worst first
-      this.seed = { chain: [...hist, rec], ci: 0, i: 0, face: 1, rec };
+      if (rec.state) {
+        // Exact checkpoint: resume from the saved game state directly.
+        this.seed = { state: rec.state, rec };
+      } else {
+        // Older runs have no checkpoint: replay the history chain (drifts).
+        const hist = loadBestHistory()
+          .filter((h) => h.level === rec.level && !(h.dist === rec.dist && h.acts.length === rec.acts.length))
+          .sort((a, b) => b.dist - a.dist); // worst first
+        this.seed = { chain: [...hist, rec], ci: 0, i: 0, face: 1, rec };
+      }
     }
     if (!this.seed) {
       this.lastX = this.g.player.x;
@@ -882,24 +923,30 @@ export class PpoTrainer {
     this.resetting = false;
   }
 
-  // Replays the best-run chain toward the frontier, a bounded chunk per tick.
+  // Replays the best-run chain (or restores the saved state) toward the
+  // frontier, a bounded chunk per tick.
   seedStep(budget) {
     const g = this.g;
     const s = this.seed;
     g.bot = null;                 // no policy decisions while seeding
     g.nextLevel = () => {};       // exiting during the seed is not a win
-    let n = budget;
-    while (n-- > 0 && !g.player.dead && s.ci < s.chain.length) {
-      const seg = s.chain[s.ci];
-      const a = seg.acts[Math.min(Math.floor(s.i / 4), seg.acts.length - 1)];
-      const { move } = actParts(a);
-      if (move !== 0) s.face = move;
-      applyAction(g, a, s.face);
-      g.update(1 / 60);
-      s.i++;
-      if (s.i >= seg.acts.length * 4) { s.i = 0; s.ci++; }
+    if (s.state) {
+      restoreState(g, s.state);   // exact checkpoint: done in one tick
+    } else {
+      let n = budget;
+      while (n-- > 0 && !g.player.dead && s.ci < s.chain.length) {
+        const seg = s.chain[s.ci];
+        const a = seg.acts[Math.min(Math.floor(s.i / 4), seg.acts.length - 1)];
+        const { move } = actParts(a);
+        if (move !== 0) s.face = move;
+        applyAction(g, a, s.face);
+        g.update(1 / 60);
+        s.i++;
+        if (s.i >= seg.acts.length * 4) { s.i = 0; s.ci++; }
+      }
+      if (!(s.ci >= s.chain.length || g.player.dead)) return; // still replaying
     }
-    if (s.ci >= s.chain.length || g.player.dead) {
+    {
       const rec = s.rec;
       g.bot = this.bot;
       g.nextLevel = (dest) => {
@@ -961,6 +1008,7 @@ export class PpoTrainer {
       dist: Math.round(this.recBestDist * 10) / 10,
       acts: this.recActs,
       end: [Math.round(this.g.player.x), Math.round(this.g.player.y)], // frontier for the fallback compass
+      state: snapshotState(this.g), // exact checkpoint to resume from
       episodes: this.episodes,
       updates: this.updates,
       t: Date.now(),
@@ -1008,10 +1056,13 @@ export class PpoTrainer {
       if (now - (this.statusAt || 0) > 500) {
         this.statusAt = now;
         if (this.seed) {
-          const done = this.seed.chain.slice(0, this.seed.ci).reduce((a, s) => a + s.acts.length, 0)
-            + Math.floor(this.seed.i / 4);
-          const total = this.seed.chain.reduce((a, s) => a + s.acts.length, 0);
-          this.onStatus(`seeding from best run… (${done}/${total} actions)`);
+          if (this.seed.state) this.onStatus('restoring best-run state…');
+          else {
+            const done = this.seed.chain.slice(0, this.seed.ci).reduce((a, s) => a + s.acts.length, 0)
+              + Math.floor(this.seed.i / 4);
+            const total = this.seed.chain.reduce((a, s) => a + s.acts.length, 0);
+            this.onStatus(`seeding from best run… (${done}/${total} actions)`);
+          }
         }
         else this.onStatus(`ep ${this.episodes} · wins ${this.successes}/${this.episodes} · upd ${this.updates} · t ${Math.floor(this.episodeSteps / 60)}s`);
       }
