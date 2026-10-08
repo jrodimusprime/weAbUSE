@@ -1095,21 +1095,26 @@ export class PpoTrainer {
     if (wallCount < this.lastWallCount) r += 3 * (this.lastWallCount - wallCount);
     this.lastWallCount = wallCount;
     // Teleportation: an instantaneous position jump means a teleport actually
-    // happened — credit the event so using teleporters is clearly good.
+    // happened — credit the event strongly so using teleporters is clearly good.
     if (this.prevPosX !== null) {
       const jump = Math.abs(p.x - this.prevPosX) + Math.abs(p.y - this.prevPosY);
-      if (jump > 100) r += 2;
+      if (jump > 100) r += 5;
     }
     this.prevPosX = p.x;
     this.prevPosY = p.y;
     // Interaction credit: the previous decision pressed down while touching a
-    // teleporter/platform/switch — reward the action itself, not just the state.
+    // teleporter/platform/switch — reward the action itself, not just the
+    // state. Teleporters pay more: their graph distance is already tiny while
+    // standing on them, so the press itself must carry the signal.
     {
       const { down } = actParts(this.lastAct);
       if (down) {
         for (const e of g.entities) {
           if (e.dead || !INTERACT_AI.has(e.ai)) continue;
-          if (g.touchesPlayer(e)) { r += 1; break; }
+          if (g.touchesPlayer(e)) {
+            r += (e.ai === 'tp2_ai' || e.ai === 'tpd_ai') ? 2 : 1;
+            break;
+          }
         }
       }
     }
