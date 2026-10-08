@@ -147,24 +147,95 @@ function ant(e, g) {
   return true;
 }
 
-// ---- flyers ----
+// ---- flyers (flyer.lsp) ----
 function flyer(e, g) {
   const p = g.player, a = e.a;
-  if (e.hp <= 0) { killEffects(e, g, true); return false; }
-  if (a.cd > 0) a.cd--;
-  if (e.state === 'flinch_up') { if (!e.nextPicture()) e.setState('running'); } else e.nextPicture();
-  const tx = p.x + (e.x < p.x ? -90 : 90), ty = p.y - 70;
-  const maxvx = e.lv?.max_xvel || 8, maxvy = e.lv?.max_yvel || 5;
-  e.vx += Math.sign(tx - e.x) * 1.5; e.vy += Math.sign(ty - e.y) * 1;
-  e.vx = Math.max(-maxvx, Math.min(maxvx, e.vx)); e.vy = Math.max(-maxvy, Math.min(maxvy, e.vy));
+  const lv = e.lv || {};
+  const maxvx = lv.max_xvel ?? 10, maxvy = lv.max_yvel ?? 5;
+
+  // flyer_damage: smoke trail + knock-up whenever we take a hit.
+  if (a.lastHp === undefined) a.lastHp = e.hp;
+  else if (e.hp < a.lastHp) {
+    a.smokeTime = 30;
+    e.vy -= 14;
+    e.setState('flinch_up');
+  }
+  a.lastHp = e.hp;
+  if (a.smokeTime > 0) {
+    a.smokeTime--;
+    if (a.smokeTime % 2 === 0) g.effect('SMALL_DARK_CLOUD', e.x, e.y);
+  }
+
+  // Wait for the trigger before activating (aistate 0 = stopped/unhurtable).
+  if (e.aistate === 0) {
+    if (e.links.length === 0 || e.links[0].aistate !== 0) {
+      if (!e.nextPicture()) { e.shootable = true; e.setState('running'); e.aistate = 1; }
+    } else {
+      e.shootable = false;
+      e.setState('stopped');
+    }
+    return true;
+  }
+
+  // Dead: three explosions, then remove ourselves.
+  if (e.hp <= 0) {
+    g.effect('EXPLODE1', e.x + g.rand(10), e.y + g.rand(10) - 20);
+    g.effect('EXPLODE1', e.x - g.rand(10), e.y - g.rand(10) - 20);
+    g.effect('EXPLODE1', e.x, e.y - g.rand(20) - 20);
+    return false;
+  }
+
+  // Flyer hum every 5 ticks.
+  if (e.stateTime % 5 === 0) g.sound('robot02', e.x, e.y);
+
+  // Chase the player horizontally (accel 1/tick, capped by max_xvel).
+  if (p.x > e.x) {
+    e.vx = Math.min(e.vx + 1, maxvx);
+    if (e.dir === -1) { e.dir = 1; e.setState('turn_around'); }
+  } else if (p.x < e.x) {
+    e.vx = Math.max(e.vx - 1, -maxvx);
+    if (e.dir === 1) { e.dir = -1; e.setState('turn_around'); }
+  }
+
+  // Hover in the band between 70px and 50px above the player's head.
+  if (p.y - 70 > e.y) e.vy = e.vy > maxvy ? e.vy - 1 : e.vy + 1;
+  else if (p.y - 50 < e.y) e.vy = e.vy < -maxvy ? e.vy + 1 : e.vy - 1;
+
+  // Random jitter, 1 in 5 each way.
+  if (g.rand(5) === 0) e.vx += 1; else if (g.rand(5) === 0) e.vx -= 1;
+  if (g.rand(5) === 0) e.vy += 1; else if (g.rand(5) === 0) e.vy -= 1;
+
+  // Advance the current animation; loop back to running once it finishes.
+  if (!e.nextPicture()) e.setState('running');
+
+  // bounce_move: half the velocity on any wall/floor/ceiling contact.
   const m = g.moveEntity(e, e.vx, e.vy);
-  if (m.blockedX) e.vx = -e.vx * 0.5;
-  if (m.up || m.down) e.vy = -e.vy * 0.5;
-  e.dir = p.x > e.x ? 1 : -1;
-  const delay = e.lv?.fire_delay || 18;
-  if (!a.cd && Math.abs(p.x - e.x) < 260 && Math.abs(p.y - e.y) < 200 && g.sees(e.x, e.y - 8, p.x, p.y - 15)) {
-    enemyShot(g, e.x + e.dir * 12, e.y - 8, p.x, p.y - 15, 16, 6, 'spark');
-    a.cd = delay;
+  if (m.blockedX) e.vx = Math.trunc(e.vx / 2);
+  if (m.down || m.up) e.vy = Math.trunc(e.vy / 2);
+
+  // Burst fire a straight rocket at the player (flyer_cons: burst_total 2,
+  // burst_delay 3, fire_delay 20; aitype 9 = STRAIT_ROCKET).
+  a.fireTime ??= 0; a.burstWait ??= 0; a.burstLeft ??= 0;
+  const fireDelay = lv.fire_delay ?? 20, burstDelay = lv.burst_delay ?? 3, burstTotal = lv.burst_total ?? 2;
+  if (a.fireTime > 0) {
+    a.fireTime--;
+    if (a.fireTime === 0) { a.burstLeft = burstTotal; a.burstWait = 0; }
+  } else if (a.burstWait === 0) {
+    const facing = e.dir === (p.x > e.x ? 1 : -1);
+    if (Math.abs(p.x - e.x) < 150 && facing) {
+      const firex = e.x + e.dir * 10, firey = e.y;
+      const playerx = p.x + p.vx * 4, playery = p.y - 15 + p.vy * 2;
+      if (g.sees(e.x, e.y, firex, firey) && g.sees(firex, firey, playerx, playery)) {
+        const ang = Math.atan2(firey - playery, playerx - firex);
+        g.projs.push({ kind: 'rocket', x: firex, y: firey, px: firex, py: firey, vx: Math.cos(ang) * 15, vy: -Math.sin(ang) * 15, life: 60, dmg: 15, radius: 25, mine: false, def: 'ROCKET', smoke: 0, straight: true });
+        g.sound('mgun', firex, firey);
+        if (a.burstLeft <= 1) a.fireTime = fireDelay;
+        else a.burstLeft--;
+        a.burstWait = burstDelay;
+      }
+    }
+  } else {
+    a.burstWait--;
   }
   return true;
 }
@@ -645,20 +716,33 @@ function platform(e, g) {
   if (e.state === 'stopped') e.setState('running'); else e.nextPicture();
   const speed = () => (e.aistate === 0 || e.yacel === 0 ? e.xacel : e.yacel) || 20;
   switch (e.aistate) {
-    case 0:
-      if ((e.links[e.aitype] && e.links[e.aitype].aistate !== 0) || (g.touchesPlayer(e) && g.pressed('action'))) goState(e, 2);
-      break;
+    case 0: {
+      const sensorOn = e.links[e.aitype] && e.links[e.aitype].aistate !== 0;
+      const boarding = g.touchesPlayer(e) && g.pressed('action');
+      if (!sensorOn && !boarding) break;
+      // platform.lsp: when the rider presses the action key while touching,
+      // snap them onto the platform top before it departs
+      // ((set_y (- (y) (get_ability start_accel))) — 22 small, 26 big, 72 red).
+      if (boarding) {
+        const accel = e.def.abilities.get('start_accel');
+        if (accel != null) { g.player.y = e.y - accel; g.player.vy = 0; g.player.ground = true; }
+      }
+      goState(e, 2);
+      // Fall through: the original's go_state re-enters platform_ai in the same
+      // tick, so departure sound + speed are set and the first step is taken now.
+    }
     case 2:
-      g.sound('swish', e.x, e.y);
+      g.sound('eleacc01', e.x, e.y); // PLAT_A_SND
       e.aitype = 1 - e.aitype;
       e.xvel = speed();
       goState(e, 3);
-      break;
+      // Fall through to take the first movement step this same tick.
     case 3: {
       const src = e.links[e.aitype], dst = e.links[1 - e.aitype];
       if (!src || !dst) { e.aistate = 0; break; }
       let nx, ny;
       if (e.xvel <= 0) { nx = dst.x; ny = dst.y; e.aistate = 0; } else {
+        if (e.xvel === 6) g.sound('eledec01', e.x, e.y); // PLAT_D_SND
         const sp = speed();
         nx = dst.x - Math.trunc(((dst.x - src.x) * e.xvel) / sp);
         ny = dst.y - Math.trunc(((dst.y - src.y) * e.xvel) / sp);

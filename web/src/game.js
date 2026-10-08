@@ -407,12 +407,16 @@ export class Game {
     }
   }
 
-  // Moves the player along with a platform they are standing on.
+  // Moves the player along with a platform they are standing on. Platforms snap
+  // the rider to (platform.y - start_accel) on boarding (platform.lsp), so the
+  // carrying surface is measured from that same offset rather than the art top.
   pushRiders(e, dx, dy) {
     const p = this.player;
     const r = this.rectOf(e);
     if (!r || p.dead || (!dx && !dy)) return;
-    if (p.x + HALF_W >= r.x0 && p.x - HALF_W <= r.x1 && Math.abs(p.y - r.y0) <= 4) {
+    const accel = e.def.abilities.get('start_accel');
+    const top = accel != null ? e.y - accel : r.y0;
+    if (p.x + HALF_W >= r.x0 && p.x - HALF_W <= r.x1 && Math.abs(p.y - top) <= 4) {
       p.x += dx; p.y += dy; p.vy = 0; p.ground = true;
     }
   }

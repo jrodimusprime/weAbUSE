@@ -197,7 +197,7 @@ export function buildObs(g, dist) {
       obs[k++] = cc < 0 || cc >= g.level.fgW || rr < 0 || rr >= g.level.fgH
         ? 1 : (g.tileSolid(cc * tw + tw / 2, rr * th + th / 2) ? 1 : 0);
       const e = entCell.get(r * WIN_C + c);
-      obs[k++] = e && e.shootable && ENEMY_AI.has(e.ai) ? 1 : 0;
+      obs[k++] = e && ENEMY_AI.has(e.ai) ? 1 : 0;
       obs[k++] = e && e.ai === 'next_level_ai' ? 1 : 0;
       let special = 0;
       if (e && (e.ai === 'tp2_ai' || e.ai === 'tpd_ai' || e.ai === 'platform_ai' || e.ai === 'sdoor_ai' || e.ai === 'strap_door_ai' || e.ai === 'switcher_ai' || e.ai === 'restart_ai')) special = 1;
@@ -214,7 +214,7 @@ export function buildObs(g, dist) {
     if (e.ai === 'next_level_ai') {
       const d = Math.abs(e.x - p.x) + Math.abs(e.y - p.y);
       if (d < ed) { ed = d; exit = e; }
-    } else if (e.shootable && ENEMY_AI.has(e.ai)) {
+    } else if (ENEMY_AI.has(e.ai)) {
       const d = Math.abs(e.x - p.x) + Math.abs(e.y - p.y);
       if (d < end) { end = d; enemy = e; }
     }
@@ -604,7 +604,7 @@ export function applyAction(g, act, faceDir = 1) {
   const p = g.player;
   let target = null, best = Infinity;
   for (const e of g.entities) {
-    if (e.dead || e.hidden || !e.shootable || !ENEMY_AI.has(e.ai)) continue;
+    if (e.dead || e.hidden || !ENEMY_AI.has(e.ai)) continue;
     const dx = Math.abs(e.x - p.x), dy = Math.abs(e.y - p.y);
     if (dx > 600 || dy > 400) continue;
     if (!g.sees(p.x, p.y - 15, e.x, e.y - 15)) continue;
@@ -1188,7 +1188,7 @@ export class PpoTrainer {
       const { fire } = actParts(this.lastAct);
       if (fire) {
         for (const e of g.entities) {
-          if (e.dead || !e.shootable || !ENEMY_AI.has(e.ai)) continue;
+          if (e.dead || !ENEMY_AI.has(e.ai)) continue;
           if (Math.abs(e.x - p.x) <= 600 && Math.abs(e.y - p.y) <= 400) { r += 0.2; break; }
         }
       }

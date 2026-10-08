@@ -140,7 +140,7 @@ export function updateProjectiles(g) {
       continue;
     }
     if (b.gravity) b.vy += b.gravity;
-    if (b.kind === 'rocket') { b.vx *= 1.04; b.vy *= 1.04; if (++b.smoke % 2 === 0) g.effect('SMALL_LIGHT_CLOUD', b.x, b.y); }
+    if (b.kind === 'rocket') { if (!b.straight) { b.vx *= 1.04; b.vy *= 1.04; } if (++b.smoke % 2 === 0) g.effect('SMALL_LIGHT_CLOUD', b.x, b.y); }
     const steps = Math.max(1, Math.ceil(Math.hypot(b.vx, b.vy) / 3));
     for (let i = 0; i < steps && !b.dead; i++) {
       const nx = b.x + b.vx / steps, ny = b.y + b.vy / steps;
