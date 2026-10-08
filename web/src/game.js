@@ -70,6 +70,7 @@ export class Game {
     this.demo = false;
     this.bot = null;
     this.autoPause = false; // PPO trainer drives update() itself; only render here
+    this.renderThrottle = 0; // ms between renders while autoPaused (0 = every frame)
     this.demoStartTick = 0;
     this.demoTimeoutTicks = 0;
     this.onDemoStop = null;
@@ -226,7 +227,13 @@ export class Game {
     this.last = now;
     if (this.autoPause) {
       // External driver (PPO trainer) owns the simulation; keep rendering.
-      this.render();
+      // renderThrottle (ms) turns the live view into a time-lapse: render
+      // only every N ms so the trainer can spend more wall-time on sim/learning.
+      const nowT = performance.now();
+      if (!this.renderThrottle || nowT - (this.lastRenderAt || 0) >= this.renderThrottle) {
+        this.lastRenderAt = nowT;
+        this.render();
+      }
       this.updateHud();
       requestAnimationFrame((t) => this.frame(t));
       return;

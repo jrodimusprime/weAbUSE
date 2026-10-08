@@ -242,7 +242,7 @@ const MAX_FALL = 80, MAX_JUMP = 8;
 let lastPathDebug = null;
 export function pathDistDebug() { return lastPathDebug; }
 
-export function pathDist(g) {
+export function pathDist(g, nextNum = null) {
   const W = g.level.fgW, H = g.level.fgH, tw = g.tw, th = g.th;
   const N = W * H;
   const p = g.player;
@@ -299,8 +299,19 @@ export function pathDist(g) {
   const goals = [];
   for (const e of g.entities) {
     if (e.dead || e.ai !== 'next_level_ai') continue;
+    // nextNum filters to the zones that actually advance to the next level
+    // (original people.lsp: next_level_ai loads level{aistate}).
+    if (nextNum !== null && e.aistate !== nextNum) continue;
     const cell = cellOf(e);
     if (cell !== null) goals.push(cell);
+  }
+  if (!goals.length && nextNum !== null) {
+    // fall back to any exit if no zone advances to the requested level
+    for (const e of g.entities) {
+      if (e.dead || e.ai !== 'next_level_ai') continue;
+      const cell = cellOf(e);
+      if (cell !== null) goals.push(cell);
+    }
   }
   if (!goals.length) return Infinity;
   const goalSet = new Set(goals);
@@ -602,7 +613,11 @@ export class PpoBot {
       if (this.n === 0) {
         // refresh the navigation distance periodically (like the trainer does)
         this._dc = (this._dc || 0) + 1;
-        if (this._dc % 24 === 0) this.lastDist = pathDist(g);
+        if (this._dc % 24 === 0) {
+          // target the zone that advances to the level after this one
+          const lm = /level(\d+)/.exec(g.level?.name || '');
+          this.lastDist = pathDist(g, lm ? +lm[1] + 1 : null);
+        }
         const obs = buildObs(g, this.lastDist);
         const { logits } = this.net.forward(obs);
         let act = 0;
@@ -624,24 +639,29 @@ export class PpoBot {
 // signal when the navigation graph can't reach any exit (e.g. sealed pockets).
 // Teleporter-aware: standing near a teleporter whose destination is close to an
 // exit counts as progress, so the proximity test keeps working with teleports.
-function fallbackDist(g) {
+function fallbackDist(g, nextNum = null) {
   const p = g.player;
   const tw = g.tw, th = g.th;
   const man = (x, y) => Math.abs(x - p.x) / tw + Math.abs(y - p.y) / th;
+  const isGoal = (e) => !e.dead && e.ai === 'next_level_ai' && (nextNum === null || e.aistate === nextNum);
   let best = Infinity;
+  let anyGoal = false;
   for (const e of g.entities) {
-    if (e.dead || e.ai !== 'next_level_ai') continue;
+    if (!isGoal(e)) continue;
+    anyGoal = true;
     best = Math.min(best, man(e.x, e.y));
   }
   for (const e of g.entities) {
     if (e.dead || (e.ai !== 'tp2_ai' && e.ai !== 'tpd_ai') || !e.links[0]) continue;
     const dest = e.links[0];
     for (const x of g.entities) {
-      if (x.dead || x.ai !== 'next_level_ai') continue;
+      if (!isGoal(x)) continue;
       const viaTp = man(e.x, e.y) + 2 + (Math.abs(x.x - dest.x) + Math.abs(x.y - dest.y)) / tw;
       if (viaTp < best) best = viaTp;
     }
   }
+  // no zone matches the requested level: use any exit
+  if (!anyGoal && nextNum !== null) return fallbackDist(g, null);
   return best;
 }
 
@@ -711,11 +731,20 @@ export class PpoTrainer {
     g.speed = 1;
     g.bot = this.bot;
     g.demoTimeoutTicks = 0;
-    g.nextLevel = () => this.endEpisode(30, true);
+    // next_level zones carry their destination level in aistate (original
+    // people.lsp): only the zone loading THIS level's successor is a win.
+    g.nextLevel = (dest) => {
+      if (dest === this.levelIdx + 1) this.endEpisode(30, true);
+      else this.endEpisode(5, true); // branch exit: level ends, not the win
+    };
     g.onDemoStop = () => this.stop();
     console.log(`[ppo] training started (${this.loaded ? 'resumed' : 'fresh'})`);
     await this.reset();
-    // 16ms ticks: 90 sim steps always run first (constant speed), then any
+    // Sped-up display: render at ~4fps while training instead of 60fps, so
+    // each shown frame advances ~40+ sim-seconds (the render itself is only
+    // 0.11ms; this is purely to make the visible run look like a time-lapse).
+    this.g.renderThrottle = 250;
+    // 16ms ticks: 450 sim steps always run first (constant speed), then any
     // leftover budget goes to gradient slices. setInterval also survives
     // background-tab throttling far better than rAF.
     this.timer = setInterval(() => this.frame(), 16);
@@ -728,6 +757,7 @@ export class PpoTrainer {
     this.paused = false;
     this.updating = null; // drop any partially-applied gradient rollout
     this.seed = null;     // drop any in-progress warm-start replay
+    this.g.renderThrottle = 0;
     const g = this.g;
     g.autoPause = false;
     g.demo = false;
@@ -827,7 +857,10 @@ export class PpoTrainer {
     if (s.ci >= s.chain.length || g.player.dead) {
       const rec = s.rec;
       g.bot = this.bot;
-      g.nextLevel = () => this.endEpisode(30, true);
+      g.nextLevel = (dest) => {
+        if (dest === this.levelIdx + 1) this.endEpisode(30, true);
+        else this.endEpisode(5, true);
+      };
       const onExit = g.entities.some((e) => !e.dead && e.ai === 'next_level_ai'
         && Math.abs(e.x - g.player.x) < 60 && Math.abs(e.y - g.player.y) < 60);
       if (onExit && !g.player.dead) g.respawn();
@@ -867,7 +900,7 @@ export class PpoTrainer {
         this.onStatus('seed stuck — exploring from spawn');
       }
     }
-    if (this.traj.obs.length >= 512) this.update();
+    if (this.traj.obs.length >= 1024) this.update();
     this.reset();
   }
 
@@ -973,15 +1006,15 @@ export class PpoTrainer {
     // instead of every N sim steps, so fast sim doesn't drown in pathfinding.
     const now = performance.now();
     if (!this.lastDistAt || now - this.lastDistAt > 250) {
-      this.lastDist = pathDist(g);
+      this.lastDist = pathDist(g, this.levelIdx + 1);
       this.lastDistAt = now;
     }
     const dist = this.lastDist;
-    // If the graph can't see any exit yet, fall back to a teleport-aware
-    // straight-line metric so the reward gradient and the best-run metric stay
-    // finite everywhere.
+    // If the graph can't see the next-level exit yet, fall back to a
+    // teleport-aware straight-line metric so the reward gradient and the
+    // best-run metric stay finite everywhere.
     const fallback = !isFinite(dist);
-    const effDist = fallback ? 1e6 + fallbackDist(g) : dist;
+    const effDist = fallback ? 1e6 + fallbackDist(g, this.levelIdx + 1) : dist;
 
     // reward for the transition that just completed
     let r = -0.02; // step cost
@@ -1070,7 +1103,7 @@ export class PpoTrainer {
       if (this.recBestDist < before) this.epNoProg = 0; // improving: keep the run alive
     }
 
-    if (this.traj.obs.length >= 512 && !this.updating) this.update();
+    if (this.traj.obs.length >= 1024 && !this.updating) this.update();
   }
 
   update() {
@@ -1100,7 +1133,7 @@ export class PpoTrainer {
     this.updating = {
       R, adv, ret, n,
       order: [...Array(n).keys()],
-      epoch: 0, pos: 0, epochs: 2, shuffled: false,
+      epoch: 0, pos: 0, epochs: 1, shuffled: false,
     };
     this.traj = { obs: [], act: [], rew: [], val: [], lp: [], done: [] };
     this.lastObs = null;
