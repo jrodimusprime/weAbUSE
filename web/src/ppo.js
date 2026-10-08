@@ -242,6 +242,25 @@ const MAX_FALL = 80, MAX_JUMP = 8;
 let lastPathDebug = null;
 export function pathDistDebug() { return lastPathDebug; }
 
+// Diagnosing the compass: returns the first edge of the shortest path from
+// the player's cell (kind + target cell), so we can see what move the reward
+// is actually pointing at.
+export function pathDistStep(g, nextNum = null) {
+  pathDist(g, nextNum);
+  const dbg = lastPathDebug;
+  if (!dbg || dbg.foundGoal === null) return null;
+  const W = g.level.fgW;
+  // trace the shortest-path tree back from the goal to the cell just after start
+  let cur = dbg.foundGoal;
+  let hops = 0;
+  while (hops++ < 100000 && dbg.prev[cur] !== dbg.start) {
+    if (dbg.prev[cur] === undefined) return null;
+    cur = dbg.prev[cur];
+  }
+  const entry = dbg.first.find((f) => f.to[0] === cur % W && f.to[1] === Math.floor(cur / W) && f.from[0] === dbg.start % W && f.from[1] === Math.floor(dbg.start / W));
+  return { dist: dbg.dist === 0xffffffff ? Infinity : dbg.dist, step: [cur % W, Math.floor(cur / W)], kind: entry ? entry.kind : '?' };
+}
+
 export function pathDist(g, nextNum = null) {
   const W = g.level.fgW, H = g.level.fgH, tw = g.tw, th = g.th;
   const N = W * H;
@@ -267,7 +286,13 @@ export function pathDist(g, nextNum = null) {
   const inWallEntity = (c, r) => {
     const x = c * tw + tw / 2;
     const yTop = r * th, yBot = (r + 1) * th;
-    for (const s of g.solids) if (x >= s.x0 && x <= s.x1 && yBot > s.y0 && yTop < s.y1) return true;
+    for (const s of g.solids) {
+      // Doors are handled separately via doorCells (passable at cost); their
+      // rects must not block the gap drops they gate (e.g. level00's strap
+      // door over the shelf chute).
+      if (s.e && (s.e.ai === 'sdoor_ai' || s.e.ai === 'strap_door_ai')) continue;
+      if (x >= s.x0 && x <= s.x1 && yBot > s.y0 && yTop < s.y1) return true;
+    }
     return false;
   };
   const sol = (c, r) => {
@@ -374,8 +399,9 @@ export function pathDist(g, nextNum = null) {
     }
   }
   const dist = new Uint32Array(N).fill(0xffffffff);
+  const prev = new Int32Array(N).fill(-1);
   const start = pr * W + pc;
-  const dbg = { start, goals, expansions: 0, goalReached: [], heapPeak: 0, cells: [], first: [] };
+  const dbg = { start, goals, expansions: 0, goalReached: [], heapPeak: 0, cells: [], first: [], prev, foundGoal: null, dist: null };
   dist[start] = 0;
   const heap = [start];
   const push = (idx, d) => {
@@ -416,6 +442,7 @@ export function pathDist(g, nextNum = null) {
     if (doorCells.has(idx)) nd += 15; // closed door: passable but expensive
     if (nd < dist[idx]) {
       dist[idx] = nd;
+      prev[idx] = from;
       push(idx, nd);
       dbg.cells.push([c, r]);
       dbg.first.push({ to: [c, r], from: [from % W, Math.floor(from / W)], kind });
@@ -424,9 +451,10 @@ export function pathDist(g, nextNum = null) {
   };
   let found = Infinity;
   let expansions = 0;
+  let foundGoal = null;
   while (heap.length && expansions++ < 200000) {
     const cur = pop();
-    if (goalSet.has(cur)) { found = dist[cur]; break; }
+    if (goalSet.has(cur)) { found = dist[cur]; foundGoal = cur; break; }
     const c = cur % W, r = Math.floor(cur / W);
     for (const s of [-1, 1]) {
       relax(cur, c + s, r, 1, 'walk');
@@ -473,6 +501,7 @@ export function pathDist(g, nextNum = null) {
         const nd = dist[cur] + Math.abs(rr - r) * 1.4;
         if (nd < dist[idx]) {
           dist[idx] = nd;
+          prev[idx] = cur;
           push(idx, nd);
           dbg.cells.push([c, rr]);
           dbg.first.push({ to: [c, rr], from: [c, r], kind: 'ladder' });
@@ -484,6 +513,8 @@ export function pathDist(g, nextNum = null) {
   dbg.expansions = expansions;
   dbg.reached = 0;
   dbg.rows = {};
+  dbg.foundGoal = foundGoal;
+  dbg.dist = found;
   for (let i = 0; i < N; i++) if (dist[i] !== 0xffffffff) { dbg.reached++; const rr = Math.floor(i / W); dbg.rows[rr] = (dbg.rows[rr] || 0) + 1; }
   lastPathDebug = dbg;
   return found;
