@@ -31,6 +31,12 @@
       border-radius: 50%; background: #3a3a3a; border: 1px solid #777; pointer-events: none;
     }
     #weapons { display: block; width: min(100vw, 160vh); height: auto; margin: 6px auto 0; image-rendering: pixelated; cursor: pointer; }
+    /* Desktop: the full-height game view pushes the control bar off-screen, so
+       shrink the stage 20% so buttons and text stay visible below it. */
+    @media (hover: hover) {
+      #c { width: min(80vw, 128vh); }
+      #weapons { width: min(80vw, 128vh); }
+    }
   </style>
 </head>
 <body>

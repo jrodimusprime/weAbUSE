@@ -622,16 +622,34 @@ export class PpoBot {
 
 // Straight-line tile distance to the nearest exit; used as a fallback progress
 // signal when the navigation graph can't reach any exit (e.g. sealed pockets).
-function manhattanToExit(g) {
+// Teleporter-aware: standing near a teleporter whose destination is close to an
+// exit counts as progress, so the proximity test keeps working with teleports.
+function fallbackDist(g) {
   const p = g.player;
+  const tw = g.tw, th = g.th;
+  const man = (x, y) => Math.abs(x - p.x) / tw + Math.abs(y - p.y) / th;
   let best = Infinity;
   for (const e of g.entities) {
     if (e.dead || e.ai !== 'next_level_ai') continue;
-    const d = Math.abs(e.x - p.x) / g.tw + Math.abs(e.y - p.y) / g.th;
-    if (d < best) best = d;
+    best = Math.min(best, man(e.x, e.y));
+  }
+  for (const e of g.entities) {
+    if (e.dead || (e.ai !== 'tp2_ai' && e.ai !== 'tpd_ai') || !e.links[0]) continue;
+    const dest = e.links[0];
+    for (const x of g.entities) {
+      if (x.dead || x.ai !== 'next_level_ai') continue;
+      const viaTp = man(e.x, e.y) + 2 + (Math.abs(x.x - dest.x) + Math.abs(x.y - dest.y)) / tw;
+      if (viaTp < best) best = viaTp;
+    }
   }
   return best;
 }
+
+// Objects the action key (down) activates on touch: pressing down while
+// touching one is a deliberate interaction the reward should credit.
+const INTERACT_AI = new Set([
+  'tp2_ai', 'tpd_ai', 'platform_ai', 'switcher_ai', 'restart_ai', 'strap_door_ai', 'sdoor_ai', 'next_level_ai',
+]);
 
 export class PpoTrainer {
   constructor(game, levelFiles, onStatus) {
@@ -678,6 +696,9 @@ export class PpoTrainer {
     this.lastFrameAt = 0;
     this.epNoProg = 0;  // sim steps since last movement or best-distance improvement
     this.epSig = null;  // 40px cell signature for the no-progress clock
+    this.enemyHp = new Map(); // per-enemy hp snapshot for damage-based rewards
+    this.prevPosX = null;
+    this.prevPosY = null;
   }
 
   async start() {
@@ -780,6 +801,9 @@ export class PpoTrainer {
     this.maxRow = Math.floor(this.g.player.y / this.g.th);
     this.epNoProg = 0;
     this.epSig = null;
+    this.enemyHp = new Map();
+    this.prevPosX = null;
+    this.prevPosY = null;
     this.resetting = false;
   }
 
@@ -953,10 +977,11 @@ export class PpoTrainer {
       this.lastDistAt = now;
     }
     const dist = this.lastDist;
-    // If the graph can't see any exit yet, fall back to Manhattan so the
-    // reward gradient and the best-run metric stay finite everywhere.
+    // If the graph can't see any exit yet, fall back to a teleport-aware
+    // straight-line metric so the reward gradient and the best-run metric stay
+    // finite everywhere.
     const fallback = !isFinite(dist);
-    const effDist = fallback ? 1e6 + manhattanToExit(g) : dist;
+    const effDist = fallback ? 1e6 + fallbackDist(g) : dist;
 
     // reward for the transition that just completed
     let r = -0.02; // step cost
@@ -969,6 +994,39 @@ export class PpoTrainer {
     const enemyCount = g.entities.filter((e) => !e.dead && e.shootable && ENEMY_AI.has(e.ai)).length;
     if (enemyCount < this.lastEnemyCount) r += 1.5 * (this.lastEnemyCount - enemyCount);
     this.lastEnemyCount = enemyCount;
+    // Dense combat credit: reward each point of damage dealt since the last
+    // decision, not just kills (a kill's remaining hp dies with the entity,
+    // so it is not double-counted here).
+    let dmg = 0;
+    for (const e of g.entities) {
+      if (e.dead || !e.shootable || !ENEMY_AI.has(e.ai)) continue;
+      const prev = this.enemyHp.get(e);
+      if (prev !== undefined && e.hp < prev) dmg += prev - e.hp;
+    }
+    this.enemyHp.clear();
+    for (const e of g.entities) {
+      if (!e.dead && e.shootable && ENEMY_AI.has(e.ai)) this.enemyHp.set(e, e.hp);
+    }
+    if (dmg > 0) r += Math.min(0.4, dmg * 0.02);
+    // Teleportation: an instantaneous position jump means a teleport actually
+    // happened — credit the event so using teleporters is clearly good.
+    if (this.prevPosX !== null) {
+      const jump = Math.abs(p.x - this.prevPosX) + Math.abs(p.y - this.prevPosY);
+      if (jump > 100) r += 2;
+    }
+    this.prevPosX = p.x;
+    this.prevPosY = p.y;
+    // Interaction credit: the previous decision pressed down while touching a
+    // teleporter/platform/switch — reward the action itself, not just the state.
+    {
+      const { down } = actParts(this.lastAct);
+      if (down) {
+        for (const e of g.entities) {
+          if (e.dead || !INTERACT_AI.has(e.ai)) continue;
+          if (g.touchesPlayer(e)) { r += 1; break; }
+        }
+      }
+    }
     // Descending into new depth is progress in this underground level: each
     // newly-reached deepest tile row pays a small one-time bonus, so dropping
     // down the chute once the way is open is clearly rewarded.
