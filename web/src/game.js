@@ -17,7 +17,8 @@ const TICK = 1 / 15; // original game logic rate
 // DARNEL abilities (people.lsp) + engine tick (objects.cpp): run_top_speed 9,
 // jump_yvel -15, start_accel 8, stop_accel 9, jump_top_speed 10.
 // Vertical motion uses the engine's exact fixed-point gravity (see tick()):
-// 200/256 px per tick^2 with the cop_mover terminal-fall cap.
+// yacel grows by 200/256 px/tick^2 every airborne tick, with the cop_mover
+// terminal-fall cap. Jumps start on a tick, like the original's 15 Hz input.
 const RUN_SPEED = 135; // 9 px/tick
 const JUMP_VEL = 225; // 15 px/tick
 const AIR_SPEED = 150; // jump_top_speed 10 px/tick
@@ -165,10 +166,11 @@ export class Game {
     this.transitioning = false;
     this.onLevel?.(level.name);
 
-    const byIndex = level.objects.map((o) => {
+    const byIndex = level.objects.map((o, i) => {
       const def = this.assets.defs.get(o.type);
       if (!def || o.type === 'START') return null;
       const e = new Entity(def, o);
+      e.id = i; // stable identity (place in the level file) for PPO checkpoints
       e.lv = o.lv || {};
       e.shootable = def.flags.get('hurtable') === 'T' || /BOMB$/.test(o.type);
       e.logic = LOGIC_AI.has(e.ai);
@@ -402,21 +404,43 @@ export class Game {
       // can_block objects (BLOCK, STEP, ROB1...) use per-frame art: states like
       // "step_gone" / "rob_hiding" draw an empty frame and don't block.
       if (canBlock && !SOLID_AI.has(e.ai) && (e.state === 'running' || e.state === 'dieing' || e.state === 'rob_hiding')) continue;
-      const r = this.rectOf(e);
+      const r = e.ai === 'platform_ai' ? this.deckRect(e) : this.rectOf(e);
       if (r) this.solids.push({ ...r, e });
     }
   }
 
-  // Moves the player along with a platform they are standing on. Platforms snap
-  // the rider to (platform.y - start_accel) on boarding (platform.lsp), so the
-  // carrying surface is measured from that same offset rather than the art top.
+  // Elevators block with their sprite's boundary polygon (the deck), not the
+  // whole picture: platform.spe's big platform has 17 px of art above the deck,
+  // and the decks sit where platform.lsp's start_accel snap expects them.
+  deckRect(e) {
+    const r = this.rectOf(e);
+    const b = this.spriteOf(e)?.boundary;
+    if (!r || !b || b.length < 3) return r;
+    let bx0 = Infinity, by0 = Infinity, bx1 = -Infinity, by1 = -Infinity;
+    for (const [bx, by] of b) {
+      bx0 = Math.min(bx0, bx); bx1 = Math.max(bx1, bx);
+      by0 = Math.min(by0, by); by1 = Math.max(by1, by);
+    }
+    return e.dir < 0
+      ? { x0: r.x1 - bx1, y0: r.y0 + by0, x1: r.x1 - bx0, y1: r.y0 + by1 }
+      : { x0: r.x0 + bx0, y0: r.y0 + by0, x1: r.x0 + bx1, y1: r.y0 + by1 };
+  }
+
+  overDeck(r) {
+    const p = this.player;
+    return p.x + HALF_W >= r.x0 && p.x - HALF_W <= r.x1;
+  }
+
+  // Moves the player along with a platform they are standing on, as
+  // level.cpp platform_push does: a rising platform first picks up a player it
+  // would run into, then anyone standing on the deck (a 2 px move down is
+  // blocked by the platform) is carried by the same amount.
   pushRiders(e, dx, dy) {
     const p = this.player;
-    const r = this.rectOf(e);
-    if (!r || p.dead || (!dx && !dy)) return;
-    const accel = e.def.abilities.get('start_accel');
-    const top = accel != null ? e.y - accel : r.y0;
-    if (p.x + HALF_W >= r.x0 && p.x - HALF_W <= r.x1 && Math.abs(p.y - top) <= 4) {
+    const r = this.deckRect(e);
+    if (!r || p.dead || (!dx && !dy) || !this.overDeck(r)) return;
+    if (dy < 0 && p.y <= r.y0 && p.y - dy >= r.y0) p.y = r.y0;
+    if (p.y >= r.y0 - 2 && p.y <= r.y0 + 4) {
       p.x += dx; p.y += dy; p.vy = 0; p.ground = true;
     }
   }
@@ -479,7 +503,7 @@ export class Game {
     }
   }
 
-  explode(x, y, radius, dmg, fromPlayer, noEntities = false, exclude = null) {
+  explode(x, y, radius, dmg, fromPlayer, noEntities = false, exclude = null, sparePlayer = false) {
     this.effect('EXPLODE1', x, y);
     this.effect('EXPLODE3', x + this.rand(10) - 5, y + this.rand(10) - 5);
     this.sound('explode', x, y);
@@ -491,6 +515,7 @@ export class Game {
         if (d < radius) this.damage(e, Math.max(1, ((radius - d) * dmg) / radius));
       }
     }
+    if (sparePlayer) return; // hurt_radius with the player as its excluded object
     const p = this.player;
     const d = Math.hypot(p.x - x, p.y - 18 - y);
     if (d < radius) {
@@ -549,6 +574,17 @@ export class Game {
     if (!p.owned.has(weapon)) { p.owned.add(weapon); p.weapon = weapon; }
   }
 
+  // view.cpp add_ammo: when the selected weapon (other than the machine gun)
+  // runs dry, switch_to_powerful (options.lsp, on by default) selects the
+  // highest status-bar slot that still has ammo, never the fire bomb (slot 3),
+  // falling back to the machine gun.
+  outOfAmmo() {
+    const p = this.player;
+    if (p.weapon === 'MGUN' || (p.ammo[p.weapon] || 0) > 0) return;
+    const slots = ['DFRIS', 'LSABER', 'PGUN', 'ROCKET', 'GRENADE'];
+    p.weapon = slots.find((w) => p.owned.has(w) && (p.ammo[w] || 0) > 0) || 'MGUN';
+  }
+
   // ---- simulation ----
   update(dt) {
     const p = this.player;
@@ -565,18 +601,37 @@ export class Game {
     this.tickCount = (this.tickCount || 0) + 1;
     if (this.msgTime > 0) this.msgTime--;
     if (this.helpTime > 0 && --this.helpTime === 0) { this.onHelp?.(''); this.helpVoice = null; }
-    // The original's vertical physics, exactly as objects.cpp tick() plus the
-    // cop_mover terminal-fall cap: fixed-point gravity 200/256 px/tick^2
-    // (fyacel) with carry into yacel, then velocity += yacel + fractional
-    // carry. Runs at the 15 Hz tick; px/s = 15 * px/tick.
-    if (p && !p.climbing && !(this.rightDown && p.power === 'FLY')) {
-      if (p.vy > 150) { p.vy -= 15; p.yacel = 0; p.fyacel = 0; } // cop_mover: >10 px/tick
-      const fya = (p.yacel || 0) >= 0 ? (p.fyacel || 0) + 200 : (p.fyacel || 0) - 200;
-      p.yacel = (p.yacel || 0) + (fya >> 8);
-      p.fyacel = fya & 255;
-      p.fyvel = ((p.fyvel || 0) + p.fyacel) & 255;
-      p.vy += (p.yacel + (p.fyvel >> 8)) * 15;
+    // cop.cpp top_ai: the weapon's fire_delay1 counts down once per tick.
+    if (p.cooldown > 0) p.cooldown--;
+    // The original's vertical physics, in its order (cop.cpp cop_mover, then
+    // objects.cpp mover and tick), at the 15 Hz tick; px/s = 15 * px/tick.
+    if (!p.climbing && !(this.rightDown && p.power === 'FLY')) {
+      // cop_mover terminal velocity: above 10 px/tick, yacel is zeroed and
+      // the fall slows by 1.
+      if (p.vy > 150) { p.vy -= 15; p.yacel = 0; }
+      // mover: a jump starts on the tick (jump_yvel -15) and only from the
+      // ground, i.e. while gravity is off. jumpQueued is only set on a frame
+      // where the player was standing.
+      if (p.jumpQueued && !p.dead && p.vy >= 0) {
+        p.vy = -JUMP_VEL; p.ground = false;
+        p.yacel = 0; p.fyacel = 0; p.fyvel = 0;
+      }
+      if (p.ground) {
+        // Standing: gravity is off and the fixed-point state is zero.
+        p.yacel = 0; p.fyacel = 0; p.fyvel = 0;
+      } else {
+        // tick(): gravity adds 200/256 to the *acceleration* every tick
+        // (fyacel, carrying into yacel), then the velocity gains yacel plus
+        // the carry out of the fractional velocity (fyvel).
+        const fya = p.yacel >= 0 ? p.fyacel + 200 : p.fyacel - 200;
+        p.yacel += fya >> 8;
+        p.fyacel = fya & 255;
+        const fyv = p.fyvel + p.fyacel;
+        p.vy += (p.yacel + (fyv >> 8)) * 15;
+        p.fyvel = fyv & 255;
+      }
     }
+    p.jumpQueued = false;
     this.applyArea();
     for (const e of this.entities) { e.px = e.x; e.py = e.y; }
     for (const e of this.entities.slice()) {
@@ -630,7 +685,6 @@ export class Game {
   updatePlayer(dt) {
     const p = this.player;
     const k = this.keys;
-    p.cooldown = Math.max(0, p.cooldown - dt);
 
     if (p.dead) {
       p.deadTime -= dt;
@@ -685,13 +739,7 @@ export class Game {
       else p.vx -= Math.sign(p.vx) * Math.min(Math.abs(p.vx), DECEL * dt);
 
       if (power === 'FLY') p.vy = ((down ? 1 : 0) - (up || jump ? 1 : 0)) * 110;
-      else if (jump && p.ground) {
-        // jump_yvel -15 (px/tick); the fixed-point state is reset like the
-        // original's landing zero-out so the rise is exact.
-        p.vy = -JUMP_VEL;
-        p.ground = false;
-        p.yacel = 0; p.fyacel = 0; p.fyvel = 0;
-      }
+      else if (jump && p.ground) p.jumpQueued = true; // taken on the next tick
 
       const wasGround = p.ground;
       this.moveX(p, p.vx * dt);
@@ -780,9 +828,12 @@ export class Game {
   moveY(p, dy) {
     const n = Math.ceil(Math.abs(dy));
     const s = Math.sign(dy);
-    // With tick-based gravity, vy is 0 on most frames; re-test the feet edge
+    // With tick-based gravity, vy is 0 on most frames; re-test the ground
     // instead of clearing the grounded flag (otherwise the idle pose flickers).
-    if (n === 0) { p.ground = this.verticalHits(p, p.y + 1, HALF_W, BODY_H, true); return; }
+    // This is the same body test that stops a fall, so the player counts as
+    // standing wherever they are held up — on a ramp the support is under the
+    // uphill edge of the body, not under its centre.
+    if (n === 0) { p.ground = this.boxHits(p.x, p.y + 1, HALF_W, BODY_H, null); return; }
     p.ground = false;
     for (let i = 0; i < n; i++) {
       const ny = p.y + s * Math.min(1, Math.abs(dy) - i);

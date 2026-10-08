@@ -14,14 +14,14 @@ export const LARGE_FIRE_OFF = [
 ];
 
 export const WEAPONS = {
-  // delay = original fire_delay1 (ticks at 15 Hz) converted to seconds.
-  MGUN: { top: 'MGUN_TOP', label: 'Machine gun', kind: 'bullet', delay: 3 / 15, aim: 1 },
-  PGUN: { top: 'PGUN_TOP', label: 'Plasma', kind: 'plasma', delay: 2 / 15 },
-  GRENADE: { top: 'GRENADE_TOP', label: 'Grenades', kind: 'grenade', delay: 6 / 15 },
-  ROCKET: { top: 'ROCKET_TOP', label: 'Rockets', kind: 'rocket', delay: 6 / 15, large: true },
-  FIREBOMB: { top: 'FIREBOMB_TOP', label: 'Fire bombs', kind: 'grenade', delay: 6 / 15, fire: true },
-  DFRIS: { top: 'DFRIS_TOP', label: 'Death frisbee', kind: 'plasma', delay: 6 / 15, big: true, large: true },
-  LSABER: { top: 'LIGHT_SABER', label: 'Light saber', kind: 'plasma', delay: 1 / 15, big: true },
+  // delay = original fire_delay1 (cop.cpp ufuns), in 15 Hz ticks.
+  MGUN: { top: 'MGUN_TOP', label: 'Machine gun', kind: 'bullet', delay: 3, aim: 1 },
+  PGUN: { top: 'PGUN_TOP', label: 'Plasma', kind: 'plasma', delay: 2 },
+  GRENADE: { top: 'GRENADE_TOP', label: 'Grenades', kind: 'grenade', delay: 6 },
+  ROCKET: { top: 'ROCKET_TOP', label: 'Rockets', kind: 'rocket', delay: 6, large: true },
+  FIREBOMB: { top: 'FIREBOMB_TOP', label: 'Fire bombs', kind: 'grenade', delay: 6, fire: true },
+  DFRIS: { top: 'DFRIS_TOP', label: 'Death frisbee', kind: 'plasma', delay: 6, big: true, large: true },
+  LSABER: { top: 'LIGHT_SABER', label: 'Light saber', kind: 'plasma', delay: 1, big: true },
 };
 export const WEAPON_ORDER = ['MGUN', 'PGUN', 'GRENADE', 'ROCKET', 'FIREBOMB', 'DFRIS', 'LSABER'];
 
@@ -55,11 +55,22 @@ export function firePlayer(g) {
   const p = g.player;
   const w = WEAPONS[p.weapon];
   if (!w || p.cooldown > 0 || p.dead) return;
-  if (!g.god) {
-    if ((p.ammo[p.weapon] || 0) <= 0) return;
-    p.ammo[p.weapon]--;
-  }
   p.cooldown = w.delay;
+  if (!g.god) {
+    if ((p.ammo[p.weapon] || 0) > 0) {
+      p.ammo[p.weapon]--;
+      if (p.ammo[p.weapon] === 0) g.outOfAmmo();
+    } else if (p.weapon === 'MGUN') {
+      // cop.cpp laser_ufun: the machine gun still fires with no ammo, at the
+      // slower fire_delay1 of 5 ticks.
+      p.cooldown = 5;
+    } else {
+      // An empty weapon is never left selected (view.cpp add_ammo).
+      p.cooldown = 0;
+      g.outOfAmmo();
+      return;
+    }
+  }
   p.justFired = true; // people.lsp: player flashes with bright_tint after firing
   // p.aimAngle is the original's point_angle in degrees (cop.cpp top_ai).
   const ang = p.aimAngle * Math.PI / 180;

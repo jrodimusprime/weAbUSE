@@ -177,6 +177,10 @@ function flyer(e, g) {
     return true;
   }
 
+  // Awake flyers are always hittable, also when a restored PPO checkpoint
+  // put one straight into aistate 1 without the wake-up transition above.
+  e.shootable = true;
+
   // Dead: three explosions, then remove ourselves.
   if (e.hp <= 0) {
     g.effect('EXPLODE1', e.x + g.rand(10), e.y + g.rand(10) - 20);
@@ -224,7 +228,7 @@ function flyer(e, g) {
     const facing = e.dir === (p.x > e.x ? 1 : -1);
     if (Math.abs(p.x - e.x) < 150 && facing) {
       const firex = e.x + e.dir * 10, firey = e.y;
-      const playerx = p.x + p.vx * 4, playery = p.y - 15 + p.vy * 2;
+      const playerx = p.x + (p.vx / 15) * 4, playery = p.y - 15 + (p.vy / 15) * 2; // port velocities are px/s
       if (g.sees(e.x, e.y, firex, firey) && g.sees(firex, firey, playerx, playery)) {
         const ang = Math.atan2(firey - playery, playerx - firex);
         g.projs.push({ kind: 'rocket', x: firex, y: firey, px: firex, py: firey, vx: Math.cos(ang) * 15, vy: -Math.sin(ang) * 15, life: 60, dmg: 15, radius: 25, mine: false, def: 'ROCKET', smoke: 0, straight: true });
@@ -432,8 +436,10 @@ function wall(big) {
       g.sound('hwall', e.x, e.y);
       // Original hurt_radius: hwall x+15*dir,y-7 r=50 m=60 ; big_wall x,y-15 r=110 m=120.
       // The blast damages the neighbouring walls, so the whole linked floor goes up at once.
-      if (big) g.explode(e.x, e.y - 15, 110, 120, false, false, e);
-      else g.explode(e.x + 15 * e.dir, e.y - 7, 50, 60, false, false, e);
+      // Both pass (bg) as hurt_radius's excluded object (doors.lsp), so the
+      // blast never hurts or throws the player who shot the wall.
+      if (big) g.explode(e.x, e.y - 15, 110, 120, false, false, e, true);
+      else g.explode(e.x + 15 * e.dir, e.y - 7, 50, 60, false, false, e, true);
       return false;
     }
     return true;
@@ -721,11 +727,13 @@ function platform(e, g) {
       const boarding = g.touchesPlayer(e) && g.pressed('action');
       if (!sensorOn && !boarding) break;
       // platform.lsp: when the rider presses the action key while touching,
-      // snap them onto the platform top before it departs
-      // ((set_y (- (y) (get_ability start_accel))) — 22 small, 26 big, 72 red).
+      // they are set to (y - start_accel) — 22 small, 26 big, 72 red — which is
+      // on or just above the deck, and the engine's next tick() settles them
+      // onto it (objects.cpp tick: drops of up to 11 px are taken at once).
+      // The net effect is the rider standing on the deck when it departs.
       if (boarding) {
-        const accel = e.def.abilities.get('start_accel');
-        if (accel != null) { g.player.y = e.y - accel; g.player.vy = 0; g.player.ground = true; }
+        const deck = g.deckRect(e);
+        if (deck && g.overDeck(deck)) { g.player.y = deck.y0; g.player.vy = 0; g.player.ground = true; }
       }
       goState(e, 2);
       // Fall through: the original's go_state re-enters platform_ai in the same
