@@ -1,7 +1,8 @@
 import { Game } from './game.js';
 import { WEAPON_ORDER } from './weapons.js';
 import { readPalette, T } from './spec.js';
-import { LEVELS, toggleDemo } from './demo.js';
+import { LEVELS, toggleDemo, replayBestRun } from './demo.js';
+import { PpoTrainer, hasTrainedPolicy, loadBestRun, loadBestHistory } from './ppo.js';
 
 const select = document.getElementById('level');
 for (const l of LEVELS) select.add(new Option(l, l));
@@ -12,8 +13,77 @@ const game = new Game(document.getElementById('c'), document.getElementById('hud
 window.game = game;
 
 // Demo sweep: autopilot playthrough of every level at 2x, starting at level 0.
-demoBtn.addEventListener('click', () => { toggleDemo(game, demoBtn, select); demoBtn.blur(); });
-addEventListener('keydown', (e) => { if (e.code === 'KeyD' && !e.repeat && !game.demo) toggleDemo(game, demoBtn, select); });
+// Uses the trained PPO policy when one exists (the saved best checkpoint).
+const startDemo = () => {
+  if (trainingActive()) ppoTrainer.stop();
+  toggleDemo(game, demoBtn, select);
+};
+demoBtn.addEventListener('click', () => { startDemo(); demoBtn.blur(); });
+addEventListener('keydown', (e) => { if (e.code === 'KeyD' && !e.repeat && !game.demo) startDemo(); });
+
+// PPO trainer: trains a policy in-page; the demo uses it once saved.
+const ppoBtn = document.getElementById('ppo');
+const ppoStatus = document.getElementById('ppoStatus');
+const pauseBtn = document.getElementById('pause');
+const replayBtn = document.getElementById('bestRun');
+const bestRunSel = document.getElementById('bestRunSel');
+let ppoTrainer = null;
+const trainingActive = () => !!(ppoTrainer?.running || ppoTrainer?.paused);
+const demoUsesPpo = () => { demoBtn.textContent = hasTrainedPolicy() ? 'Demo: play 0-21 at 2x (PPO)' : 'Demo: play 0-21 at 2x'; };
+const bestEntries = () => {
+  const rec = loadBestRun();
+  const hist = loadBestHistory().filter((h) => !(rec && h.level === rec.level && h.dist === rec.dist));
+  return rec ? [rec, ...hist] : hist;
+};
+const refreshReplayBtn = () => {
+  const entries = bestEntries();
+  bestRunSel.innerHTML = '';
+  for (const e of entries) bestRunSel.add(new Option(`${e.level} — dist ${e.dist} (${e.acts.length} actions)`));
+  bestRunSel.disabled = entries.length === 0;
+  replayBtn.textContent = entries.length ? 'Replay best run' : 'Replay best run (none saved)';
+};
+const refreshPauseBtn = () => {
+  pauseBtn.disabled = !trainingActive();
+  pauseBtn.textContent = ppoTrainer?.paused ? 'Resume' : 'Pause';
+};
+const startTraining = () => {
+  ppoTrainer = new PpoTrainer(game, LEVELS, (s) => {
+    ppoStatus.textContent = s;
+    demoUsesPpo();
+    refreshReplayBtn();
+    refreshPauseBtn();
+    if (!trainingActive()) ppoBtn.textContent = 'Train PPO';
+  });
+  ppoBtn.textContent = 'Stop training';
+  ppoTrainer.start();
+  refreshPauseBtn();
+};
+demoUsesPpo();
+refreshReplayBtn();
+refreshPauseBtn();
+ppoBtn.addEventListener('click', () => {
+  if (trainingActive()) { ppoTrainer.stop(); ppoBtn.textContent = 'Train PPO'; demoUsesPpo(); refreshPauseBtn(); return; }
+  startTraining();
+});
+pauseBtn.addEventListener('click', () => {
+  if (!trainingActive()) return;
+  if (ppoTrainer.paused) ppoTrainer.resume();
+  else ppoTrainer.pause();
+  refreshPauseBtn();
+});
+replayBtn.addEventListener('click', () => {
+  if (trainingActive()) {
+    ppoTrainer.stop();
+    ppoBtn.textContent = 'Train PPO';
+    demoUsesPpo();
+    refreshPauseBtn();
+  }
+  const entries = bestEntries();
+  const rec = entries[bestRunSel.selectedIndex] || entries[0];
+  if (!rec) { game.toast('No saved runs — train first'); return; }
+  replayBestRun(game, replayBtn, select, rec);
+  replayBtn.blur();
+});
 
 // On mobile, tapping the canvas acts as the mouse (aim + fire) and the buttons
 // below the screen drive movement, use, special power and the lights.
@@ -107,6 +177,9 @@ game.onHelp = (text) => { hint.textContent = text; };
 godBtn.addEventListener('click', () => { game.setGod(!game.god); godBtn.blur(); });
 
 await game.init();
+
+// Training is manual: press "Train PPO" to start (it runs in the background,
+// even with the tab hidden). The Demo button uses the best saved model.
 
 // Bottom status bar, drawn from the original artwork (art/statbar.spe): the
 // sbar background, bright/dim weapon icons, numpad windows, digit images and

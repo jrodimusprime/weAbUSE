@@ -69,6 +69,7 @@ export class Game {
     this.speed = 1;
     this.demo = false;
     this.bot = null;
+    this.autoPause = false; // PPO trainer drives update() itself; only render here
     this.demoStartTick = 0;
     this.demoTimeoutTicks = 0;
     this.onDemoStop = null;
@@ -223,6 +224,13 @@ export class Game {
   frame(now) {
     const dt = Math.min(0.1, (now - this.last) / 1000);
     this.last = now;
+    if (this.autoPause) {
+      // External driver (PPO trainer) owns the simulation; keep rendering.
+      this.render();
+      this.updateHud();
+      requestAnimationFrame((t) => this.frame(t));
+      return;
+    }
     this.acc += dt * this.speed;
     while (this.acc >= STEP) { this.update(STEP); this.acc -= STEP; }
     this.render();
