@@ -804,6 +804,8 @@ export class PpoTrainer {
     this.enemyHp = new Map(); // per-enemy hp snapshot for damage-based rewards
     this.prevPosX = null;
     this.prevPosY = null;
+    this.lastWallCount = 0;
+    this.visited = new Set(); // 40px cells visited this episode (exploration bonus)
   }
 
   async start() {
@@ -923,6 +925,7 @@ export class PpoTrainer {
     this.prevPosX = null;
     this.prevPosY = null;
     this.lastWallCount = this.g.entities.filter((e) => !e.dead && WALL_AI.has(e.ai)).length;
+    this.visited = new Set();
     this.resetting = false;
   }
 
@@ -1178,16 +1181,25 @@ export class PpoTrainer {
         }
       }
     }
-    // Trigger discipline with dense signal: firing while a visible enemy is in
-    // range pays every decision, so sustained fire is rewarded between hits.
+    // Trigger discipline with dense signal: firing while an enemy is in range
+    // pays every decision (no line-of-sight check: near misses still teach the
+    // trigger), so sustained fire is rewarded between hits.
     {
       const { fire } = actParts(this.lastAct);
       if (fire) {
         for (const e of g.entities) {
           if (e.dead || !e.shootable || !ENEMY_AI.has(e.ai)) continue;
-          if (Math.abs(e.x - p.x) > 600 || Math.abs(e.y - p.y) > 400) continue;
-          if (g.sees(p.x, p.y - 15, e.x, e.y - 15)) { r += 0.2; break; }
+          if (Math.abs(e.x - p.x) <= 600 && Math.abs(e.y - p.y) <= 400) { r += 0.2; break; }
         }
+      }
+    }
+    // Exploration: each 40px cell reached for the first time this episode pays
+    // a novelty bonus, so wandering into new territory is rewarded too.
+    {
+      const sig = Math.floor(p.x / 40) * 1000 + Math.floor(p.y / 40);
+      if (!this.visited.has(sig)) {
+        this.visited.add(sig);
+        r += 0.2;
       }
     }
     // Descending into new depth is progress in this underground level: each
