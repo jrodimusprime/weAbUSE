@@ -18,9 +18,11 @@
 // Bumped whenever what the policy sees, is paid for, or the game's physics
 // change, so stale weights and stale recorded runs are not silently reused
 // (the previous ones stay in localStorage under their old keys).
-export const PPO_KEY = 'abuse.ppo.v4'; // v4: once-only bonuses, walls in view, compass on every decision
-export const BEST_KEY = 'abuse.ppo.bestrun4'; // 4: runs span levels; records carry their start and are replayed exactly
-export const HIST_KEY = 'abuse.ppo.besthistory4';
+export const PPO_KEY = 'abuse.ppo.v6'; // v6: the agent also sees the nearest health heart and weapon/ammo pickup (7 inputs more than v4)
+export const BEST_KEY = 'abuse.ppo.bestrun5'; // 5: a record is a chain of pieces from the level's start to its best point
+export const HIST_KEY = 'abuse.ppo.besthistory5';
+export const CAMPAIGN_KEY = 'abuse.ppo.campaign1'; // the levels passed so far, and where the next one starts
+export const STATIONS_KEY = 'abuse.ppo.stations1'; // save stations reached on the current level: the places runs may start from
 
 const ACTS = 24;            // move(-1..1) x jump x down x fire
 const ROLLOUT = 1024;       // decisions collected per policy update
@@ -40,10 +42,15 @@ const HIDDEN = 1e12;        // renderThrottle value that never draws
 // the agent in place: somewhere it has rarely been is always worth going to.
 const COMPASS = 4;          // per cell closer to the exit along the walking route (was 8)
 const EXPLORE = 3;          // for a 40 px cell no run has reached before; falls as 1/sqrt(runs that have)
-const STALL = 15 * 30 * 4;  // a run ends after 30 game-seconds with nowhere new and no progress (60 Hz steps)
-const VISITS_KEY = 'abuse.ppo.visits1';
+const SWITCH_PULL = 2;       // per cell closer to the nearest switch that is still off
+const SWITCH_ON = 10;       // for turning a switch on (once per switch per run)
+const HEALTH = 0.1;          // per point of health regained (a heart restores 20, so +2)
+const PICKUP = 1;           // for collecting ammo; a weapon the player did not have pays 3
+const STATION = 5;          // for using a save station (once per station per run)
+const STALL = 15 * 60 * 4;  // a run ends after 60 game-seconds with nowhere new and no progress (60 Hz steps)
+export const VISITS_KEY = 'abuse.ppo.visits1';
 const WIN_C = 20, WIN_R = 12, CH = 4;
-export const OBS_N = WIN_C * WIN_R * CH + 13;
+export const OBS_N = WIN_C * WIN_R * CH + 20;
 
 const ENEMY_AI = new Set([
   'ant_ai', 'flyer_ai', 'track_ai', 'spray_gun_ai', 'jug_ai',
@@ -236,7 +243,7 @@ export function buildObs(g, dist) {
       obs[k++] = e && ENEMY_AI.has(e.ai) ? 1 : 0;
       obs[k++] = e && e.ai === 'next_level_ai' ? 1 : 0;
       let special = 0;
-      if (e && (e.ai === 'tp2_ai' || e.ai === 'tpd_ai' || e.ai === 'platform_ai' || e.ai === 'sdoor_ai' || e.ai === 'strap_door_ai' || e.ai === 'switcher_ai' || BREAK_AI.has(e.ai))) special = 1;
+      if (e && (e.ai === 'tp2_ai' || e.ai === 'tpd_ai' || e.ai === 'platform_ai' || e.ai === 'sdoor_ai' || e.ai === 'strap_door_ai' || e.ai === 'restart_ai' || SWITCH_AI.has(e.ai) || BREAK_AI.has(e.ai))) special = 1;
       for (const l of g.ladders) {
         if (cc * tw >= l.x0 - 5 && cc * tw <= l.x1 + 5 && rr * th >= l.y0 && rr * th <= l.y1) special = 1;
       }
@@ -270,6 +277,22 @@ export function buildObs(g, dist) {
   obs[k++] = (p.ammo[p.weapon] || 0) > 0 ? 1 : 0;
   obs[k++] = p.cooldown > 0 ? 1 : 0;
   obs[k++] = 0; // stuck flag, set by trainer
+  // the nearest switch that is still off: which way, and how far through the level
+  const sw = switchDist(g);
+  obs[k++] = sw.nearest ? (sw.nearest.x - p.x) / 100 : 0;
+  obs[k++] = sw.nearest ? (sw.nearest.y - p.y) / 100 : 0;
+  obs[k++] = (isFinite(sw.dist) ? Math.min(sw.dist, 500) : 500) / 50;
+  // the nearest health heart and the nearest weapon / ammo pickup, if one is close by
+  let heart = null, hd = 500, ammo = null, ad = 500;
+  for (const e of g.entities) {
+    if (e.dead) continue;
+    const d = Math.abs(e.x - p.x) + Math.abs(e.y - p.y);
+    if (e.ai === 'hp_up' && d < hd) { hd = d; heart = e; } else if (e.ai === 'weapon_icon_ai' && d < ad) { ad = d; ammo = e; }
+  }
+  obs[k++] = heart ? (heart.x - p.x) / 100 : 0;
+  obs[k++] = heart ? (heart.y - p.y) / 100 : 0;
+  obs[k++] = ammo ? (ammo.x - p.x) / 100 : 0;
+  obs[k++] = ammo ? (ammo.y - p.y) / 100 : 0;
   return obs;
 }
 
@@ -658,7 +681,7 @@ function buildField(g, nextNum) {
 // ignoring gravity, around hard walls, through doors and breakable walls at a
 // cost, and through teleporters. It still bends around the level's geometry,
 // which a straight line to the exit does not.
-function buildFlood(g, nextNum) {
+function buildFlood(g, nextNum, targets = null) {
   const { W, H, N, grid, goals: walkGoals, cellOf } = navGraph(g, nextNum);
   const tw = g.tw, th = g.th;
   const flood = new Float64Array(N).fill(Infinity);
@@ -677,8 +700,9 @@ function buildFlood(g, nextNum) {
   let goals = exits.filter((e) => nextNum === null || e.aistate === nextNum);
   if (!goals.length) goals = exits;
   const heap = makeHeap();
-  const seeds = goals.map(bodyCell);
-  for (const f of walkGoals) if (f >= W) seeds.push(f - W); // where the walking graph stands to exit
+  // distance to the exit, or (with `targets`) to the nearest of those objects
+  const seeds = (targets || goals).map(bodyCell);
+  if (!targets) for (const f of walkGoals) if (f >= W) seeds.push(f - W); // where the walking graph stands to exit
   for (const i of seeds) if (i >= 0 && grid[i] !== 1 && flood[i] !== 0) { flood[i] = 0; heap.push(0, i); }
   // teleporters, reversed (arriving at the destination is reachable from the
   // pad), and lifts, which join their two stops in both directions
@@ -738,7 +762,10 @@ export function navFields(g, nextNum = null) {
 export function floodDist(g, nextNum = null) {
   const sig = navSig(g, nextNum);
   if (!fieldCache || fieldCache.sig !== sig) { fieldCache = { sig, field: buildField(g, nextNum) }; navStats.builds++; }
-  const flood = (fieldCache.flood ??= buildFlood(g, nextNum));
+  return readFlood(g, (fieldCache.flood ??= buildFlood(g, nextNum)));
+}
+
+function readFlood(g, flood) {
   const W = g.level.fgW, H = g.level.fgH, p = g.player;
   // The grid is coarse (a cell is judged by its centre), so in a passage
   // narrower than a cell the player's own column can read as wall: look in
@@ -751,6 +778,38 @@ export function floodDist(g, nextNum = null) {
     }
   }
   return Infinity;
+}
+
+// Switches the player works with the action key. Off (aistate 0) until used.
+const SWITCH_AI = new Set(['switcher_ai', 'switch_once_ai', 'switch_delay_ai']);
+
+// Open-space distance from the player to the nearest switch that is still
+// off, and which set of switches that was measured against (`key` changes
+// when one is pressed). Levels are gated by switches that the exit compass
+// knows nothing about (a lift that only runs once its switch is on, a door
+// opened from another room), so "go and find the switches" is a second
+// compass of its own.
+export function switchDist(g) {
+  // Always measured for the level's own next exit, whoever asks: the fields
+  // are cached per (level state, exit), and asking with a different exit
+  // would throw the cache away and rebuild it on every call.
+  const nextNum = +(/(\d+)/.exec(g.level.name) || [0, 0])[1] + 1;
+  const sig = navSig(g, nextNum);
+  if (!fieldCache || fieldCache.sig !== sig) { fieldCache = { sig, field: buildField(g, nextNum) }; navStats.builds++; }
+  let off = null, key = '';
+  for (const e of g.entities) {
+    if (e.dead || e.aistate !== 0 || !SWITCH_AI.has(e.ai)) continue;
+    (off ??= []).push(e);
+    key += `${e.id},`;
+  }
+  if (!off) return { dist: Infinity, key, nearest: null };
+  if (!fieldCache.sw || fieldCache.sw.key !== key) fieldCache.sw = { key, flood: buildFlood(g, nextNum, off) };
+  const dist = readFlood(g, fieldCache.sw.flood);
+  // the nearest in a straight line, for the agent's view
+  const p = g.player;
+  let nearest = null, bd = Infinity;
+  for (const e of off) { const d = Math.abs(e.x - p.x) + Math.abs(e.y - p.y); if (d < bd) { bd = d; nearest = e; } }
+  return { dist, key, nearest };
 }
 
 // Offset that ranks every open-space reading behind every walking-route one.
@@ -832,11 +891,21 @@ export class Net {
     const v = this.critic.forward(x);
     return { logits, v: v[0] };
   }
+  // The twelve weight arrays, in a fixed order (parallel training averages
+  // them across workers).
+  weights() {
+    const of = (m) => [m.d1.w, m.d1.b, m.d2.w, m.d2.b, m.do.w, m.do.b];
+    return [...of(this.actor), ...of(this.critic)];
+  }
+  setWeights(list) { this.weights().forEach((w, i) => w.set(list[i])); }
   save() {
+    // 6 significant digits: a float32 printed in full is ~20 characters, and
+    // 200,000 of them alone come close to the browser's storage limit.
+    const arr = (w) => Array.from(w, (v) => +v.toPrecision(6));
     const dump = (m) => ({
-      w1: Array.from(m.d1.w), b1: Array.from(m.d1.b),
-      w2: Array.from(m.d2.w), b2: Array.from(m.d2.b),
-      wo: Array.from(m.do.w), bo: Array.from(m.do.b),
+      w1: arr(m.d1.w), b1: arr(m.d1.b),
+      w2: arr(m.d2.w), b2: arr(m.d2.b),
+      wo: arr(m.do.w), bo: arr(m.do.b),
     });
     try {
       localStorage.setItem(PPO_KEY, JSON.stringify({ a: dump(this.actor), c: dump(this.critic) }));
@@ -864,11 +933,76 @@ export function hasTrainedPolicy() {
 
 // Best training run: the episode that got closest to the exit, stored as an
 // action script so it can be replayed in the demo mode.
+// A recorded stretch of play is a "piece": the state it started from (null =
+// the level's own fresh start), the action chosen at each decision (one
+// character each), and how many game steps it ran. Started the same way and
+// fed the same actions, the game replays it exactly. Pieces chain: the next
+// one starts from precisely the state the previous one ended in.
+export const encodeActs = (acts) => String.fromCharCode(...acts.map((a) => 65 + a));
+export const decodeActs = (str) => Array.from(str, (ch) => ch.charCodeAt(0) - 65);
+const validRec = (j) => !!j && Array.isArray(j.pieces) && j.pieces.length > 0;
+
 export function loadBestRun() {
   try {
     const j = JSON.parse(localStorage.getItem(BEST_KEY));
-    return j && Array.isArray(j.acts) && j.acts.length ? j : null;
+    return validRec(j) ? j : null;
   } catch { return null; }
+}
+
+// The campaign: every level passed so far, each as the chain of pieces that
+// got through it, and the level the agent is on now ("frontier") with the
+// state it enters that level in (weapons and ammo carried over). Training
+// never goes back before the frontier, and the legs together are a complete
+// playthrough up to it.
+// Kept in memory as well as in localStorage: these records can outgrow the
+// browser's storage limit, and then they live for the session only.
+const big = new Map(); // key -> { raw, value }
+function bigLoad(key, valid) {
+  let raw = null;
+  try { raw = localStorage.getItem(key); } catch { /* storage unavailable */ }
+  const have = big.get(key);
+  if (raw && (!have || raw !== have.raw)) {
+    try { const v = JSON.parse(raw); if (valid(v)) { big.set(key, { raw, value: v }); return v; } } catch { /* keep what we have */ }
+  }
+  return have ? have.value : null;
+}
+function bigSave(key, value) {
+  const raw = JSON.stringify(value);
+  big.set(key, { raw, value });
+  try { localStorage.setItem(key, raw); } catch { /* too big for storage: memory only */ }
+}
+function bigClear(key) {
+  big.delete(key);
+  try { localStorage.removeItem(key); } catch { /* ignore */ }
+}
+
+export function loadCampaign() {
+  return bigLoad(CAMPAIGN_KEY, (c) => !!c && Array.isArray(c.legs)) || { frontier: 0, entry: null, legs: [] };
+}
+export function saveCampaign(c) { bigSave(CAMPAIGN_KEY, c); }
+export function clearCampaign() { for (const k of [CAMPAIGN_KEY, STATIONS_KEY, BEST_KEY, HIST_KEY]) bigClear(k); }
+
+// Save stations the agent has used on the current level. A run may start from
+// any of them (or from the level's start) and from nowhere else: they are the
+// game's own respawn points, so the level is built to be finishable from each,
+// which an arbitrary "furthest point so far" is not. Each holds the state the
+// game was in and the chain of pieces that led there from the level's start.
+export function loadStations(levelIdx) {
+  const s = bigLoad(STATIONS_KEY, (v) => !!v && Array.isArray(v.list));
+  return s && s.levelIdx === levelIdx ? s.list : [];
+}
+export function saveStations(levelIdx, list) { bigSave(STATIONS_KEY, { levelIdx, list }); }
+
+// Everything recorded so far as one playthrough: the passed levels in order,
+// then the best progress on the current one. Each item is a piece plus the
+// level it is played on.
+export function campaignPieces() {
+  const out = [];
+  const c = loadCampaign();
+  for (const leg of c.legs) for (const piece of leg.pieces) out.push({ ...piece, levelIdx: leg.level });
+  const rec = loadBestRun();
+  if (rec && rec.levelIdx === c.frontier) for (const piece of rec.pieces) out.push({ ...piece, levelIdx: rec.levelIdx });
+  return out;
 }
 
 export function hasBestRun() { return !!loadBestRun(); }
@@ -877,7 +1011,7 @@ export function hasBestRun() { return !!loadBestRun(); }
 export function loadBestHistory() {
   try {
     const j = JSON.parse(localStorage.getItem(HIST_KEY));
-    return Array.isArray(j) ? j.filter((r) => r && Array.isArray(r.acts) && r.acts.length) : [];
+    return Array.isArray(j) ? j.filter(validRec) : [];
   } catch { return []; }
 }
 
@@ -900,7 +1034,14 @@ export function applyAction(g, act, faceDir = 1) {
   g.rightDown = false;
   if (move < 0) g.keys.add('ArrowLeft');
   else if (move > 0) g.keys.add('ArrowRight');
-  if (jump) g.keys.add('Space');
+  // "Jump" is also "up": on a ladder it climbs. The game takes Up for both
+  // (Up jumps unless the player is on a ladder), while Space always jumps,
+  // which would knock a climber straight off again.
+  if (jump) {
+    const p = g.player;
+    const onLadder = g.ladders.some((l) => p.x >= l.x0 - 5 && p.x <= l.x1 + 5 && p.y >= l.y0 && p.y <= l.y1);
+    g.keys.add(onLadder ? 'ArrowUp' : 'Space');
+  }
   // The action key calls a lift whenever the rider presses it at a stop, so
   // an agent that is still pressing it on arrival is sent straight back the
   // way it came. Once a lift has started, the key is ignored until a second
@@ -1001,9 +1142,9 @@ export class PpoBot {
 
 // Objects the action key (down) activates on touch: pressing down while
 // touching one is a deliberate interaction the reward should credit.
-// Save stations (restart_ai) are deliberately absent: a death ends the episode
-// and the level is reloaded, so they do nothing for the agent, and paying for
-// pressing down on one just teaches it to stand there.
+// Save stations (restart_ai) are not here: using one is paid separately, once
+// per station per run (see STATION), because a used station becomes a place
+// later runs can start from.
 const INTERACT_AI = new Set([
   'tp2_ai', 'tpd_ai', 'platform_ai', 'switcher_ai', 'strap_door_ai', 'sdoor_ai', 'next_level_ai',
 ]);
@@ -1134,11 +1275,10 @@ export class PpoTrainer {
     this.bestMark = Infinity;
     this.saved = { lvl: -1, dist: Infinity }; // the best run on record: level reached, distance left
     this.startIdx = 0;        // level this episode started on
-    this.cleared = 0;         // levels cleared this episode
+    this.cleared = 0;         // 1 once this episode has passed its level
+    this.epFrom = null;       // the save-station checkpoint this episode started from, if any
+    this.stationHit = null;   // a save station used since the last decision: 'x,y'
     this.levelStartStep = 0;
-    // warm-start (frontier resume) state: disabled when the seed endpoint traps
-    this.seedOk = true;
-    this.seedStrike = 0;
     this.epSeeded = false;
     this.statusAt = 0;
     this.lastFrameAt = 0;
@@ -1171,12 +1311,11 @@ export class PpoTrainer {
     // next_level zones carry their destination level in aistate (original
     // people.lsp): only the zone loading THIS level's successor is a win.
     // An exit to a later level (the next one, or a secret exit that skips
-    // ahead) clears this level and the run carries on there, as in the game.
+    // ahead) passes this level; an exit leading back just ends the run.
     this.trainExit = (dest) => {
       if (this.resetting) return;
       this.g.transitioning = true; // the exit zone fires every tick while stood in
-      if (dest > this.levelIdx && dest < this.levels.length) this.advance(dest);
-      else if (dest >= this.levels.length) this.endEpisode(30, true, 'finished the last level');
+      if (dest > this.levelIdx) this.passLevel(dest);
       else this.endEpisode(0, true, 'took an exit leading back');
     };
   }
@@ -1193,6 +1332,12 @@ export class PpoTrainer {
     g.bot = this.bot;
     g.demoTimeoutTicks = 0;
     g.nextLevel = this.trainExit;
+    // told when the player uses a save station (replays and walkthroughs don't count)
+    this.origCheckpoint = g.setCheckpoint;
+    g.setCheckpoint = (x, y) => {
+      this.origCheckpoint.call(g, x, y);
+      if (!this.replay && !this.show && !this.resetting) this.stationHit = `${x},${y}`;
+    };
     g.onDemoStop = () => this.stop();
     console.log(`[ppo] training started (${this.loaded ? 'resumed' : 'fresh'})`);
     await this.reset();
@@ -1223,14 +1368,7 @@ export class PpoTrainer {
     this.bot.act = 0;
     const total = Math.min(att.steps, att.acts.length * 4);
     const rp = this.replay = { att, n: 0, total, acc: 0, exited: false, lvl: att.startIdx, loading: null };
-    // exits behave as they did in the recorded run: on to a later level, or the end
-    g.nextLevel = (dest) => {
-      if (rp.loading || rp.exited) return;
-      g.transitioning = true;
-      if (dest > rp.lvl && dest < this.levels.length) {
-        rp.loading = g.start(this.levels[dest]).then(() => { rp.lvl = dest; rp.loading = null; }, () => { rp.exited = true; rp.loading = null; });
-      } else rp.exited = true;
-    };
+    g.nextLevel = () => { g.transitioning = true; rp.exited = true; }; // a run ends at an exit
     // run the part that is not shown at full speed, unseen
     const skip = Math.max(0, total - (att === this.winRun ? REPLAY_WIN : REPLAY_TAIL));
     while (rp.n < skip) {
@@ -1245,8 +1383,8 @@ export class PpoTrainer {
 
   replayLabel() {
     const a = this.replay.att;
-    const what = a === this.winRun ? `the furthest run so far (cleared ${a.cleared} level${a.cleared > 1 ? 's' : ''})` : 'the latest attempt';
-    return `replaying ${what}: episode ${a.episode}, ${a.how}, started on level ${a.startIdx}${a.seed ? ' from the best checkpoint' : ''}`;
+    const what = a.cleared ? `the run that passed level ${a.startIdx}` : 'the latest attempt';
+    return `replaying ${what}: episode ${a.episode}, ${a.how}`;
   }
 
   // One 60 Hz step of the replay, fed the recorded action for that decision.
@@ -1274,7 +1412,7 @@ export class PpoTrainer {
     // The replay should finish exactly where the recorded run did.
     const off = Math.abs(p.x - a.end[0]) + Math.abs(p.y - a.end[1]);
     if ((off > 4 || rp.lvl !== a.endIdx) && !rp.exited) console.warn(`[ppo] replay of episode ${a.episode} ended on level ${rp.lvl}, ${Math.round(off)}px from where the recorded run did (level ${a.endIdx})`);
-    this.lastShow = `shown: ${a === this.winRun ? `furthest run so far (cleared ${a.cleared})` : 'latest attempt'}, episode ${a.episode}, ${a.how}`;
+    this.lastShow = `shown: ${a.cleared ? `the run that passed level ${a.startIdx}` : 'latest attempt'}, episode ${a.episode}, ${a.how}`;
     this.onStatus(this.lastShow);
     this.reset();
   }
@@ -1286,13 +1424,14 @@ export class PpoTrainer {
     this.showDue = false;
     this.resetting = true;
     this.lastObs = null;
-    this.levelIdx = 0; // walkthroughs play the first level
-    try { await startRun(g, this.levels[0]); } catch { /* shown next time */ }
+    const camp = loadCampaign();
+    const F = this.levelIdx = Math.min(camp.frontier, this.levels.length - 1); // walkthroughs play the current level
+    try { await startRun(g, this.levels[F], camp.entry || null); } catch { /* shown next time */ }
     if (!this.running && !this.paused) return; // stopped while the level loaded
     g.bot = this.bot;
-    g.nextLevel = (dest) => this.endShow(dest > 0 ? `reached the exit to level ${dest}` : 'took an exit leading back');
+    g.nextLevel = (dest) => this.endShow(dest > F ? `reached the exit to level ${dest}` : 'took an exit leading back');
     g.renderThrottle = 0; // draw every frame
-    const d = exitDist(g, 1);
+    const d = exitDist(g, F + 1);
     this.show = { n: 0, acc: 0, startDist: d, bestDist: d, sig: null, lastNew: 0 };
     this.resetting = false;
     this.onStatus(`walkthrough after update ${this.updates}…`);
@@ -1304,7 +1443,7 @@ export class PpoTrainer {
     const g = this.g, p = g.player, sh = this.show;
     if (p.dead) { this.endShow('died'); return; }
     if (sh.n % 4 === 0) {
-      const dist = exitDist(g, 1);
+      const dist = exitDist(g, this.levelIdx + 1);
       if (dist < sh.bestDist) sh.bestDist = dist;
       const { logits } = this.net.forward(buildObs(g, dist));
       let act = 0;
@@ -1351,6 +1490,7 @@ export class PpoTrainer {
     g.demo = false;
     g.bot = null;
     g.nextLevel = this.prevNext;
+    if (this.origCheckpoint) { g.setCheckpoint = this.origCheckpoint; this.origCheckpoint = null; }
     g.onDemoStop = null;
     g.keys.clear();
     g.mouseDown = false;
@@ -1393,6 +1533,10 @@ export class PpoTrainer {
     this.levelStartStep = this.episodeSteps;
     this.lastX = g.player.x;
     this.lastY = g.player.y;
+    this.prevSw = Infinity; this.prevSwKey = null;
+    this.prevHp = g.player.hp;
+    this.prevOwned = g.player.owned.size;
+    this.prevAmmo = Object.values(g.player.ammo).reduce((a, b) => a + b, 0);
     this.lastEnemyCount = g.entities.filter((e) => !e.dead && e.shootable && ENEMY_AI.has(e.ai)).length;
     this.epNoProg = 0;
     this.enemyHp = new Map();
@@ -1410,19 +1554,31 @@ export class PpoTrainer {
     this.recActs = [];
     this.bestSnap = null;
     this.cleared = 0;
-    const rec = loadBestRun();
-    this.saved = rec ? { lvl: levelOf(rec, this.levels), dist: rec.dist } : { lvl: -1, dist: Infinity };
-    // Warm-start half of the episodes from the best run's checkpoint (which
-    // may be on a later level), so training resumes from the frontier; the
-    // rest start at the first level's spawn, so the policy keeps practising
-    // the whole game. If checkpoint starts stop improving (the spot is a
-    // trap), fall back to spawn starts until exploration finds a new best.
-    const seeded = this.seedOk && !!rec && !!rec.state && rec.state.v === SNAP_V && this.saved.lvl >= 0
-      && Math.random() < (this.seedStrike > 0 ? 0.25 : 0.5);
-    this.epSeeded = seeded;
-    this.epSeedState = seeded ? rec.state : null;
-    this.levelIdx = this.startIdx = seeded ? this.saved.lvl : 0;
-    try { await startRun(this.g, this.levels[this.levelIdx], this.epSeedState); } catch { /* retry next time */ }
+    // Every run starts on the frontier: the first level not yet passed. It
+    // never goes back to an earlier one.
+    const camp = loadCampaign();
+    const F = Math.min(camp.frontier, this.levels.length - 1);
+    let rec = loadBestRun();
+    if (rec && levelOf(rec, this.levels) !== F) rec = null; // a record from a level since passed
+    this.saved = rec ? { lvl: F, dist: rec.dist } : { lvl: F, dist: Infinity };
+    // A run starts either the way the game enters the level (with the weapons
+    // and ammo carried in) or at a save station the agent has already used on
+    // it. Nowhere else: a save station is a spot the level can be finished
+    // from, which the furthest point reached so far need not be. The newest
+    // station gets extra turns, since that is where the frontier is.
+    const stations = loadStations(F);
+    let from = null;
+    if (stations.length) {
+      const roll = Math.random();
+      if (roll < 0.4) from = stations[stations.length - 1];
+      else from = [null, ...stations][Math.floor(Math.random() * (stations.length + 1))];
+    }
+    this.epSeeded = !!from;
+    this.epFrom = from;
+    this.epSeedState = from ? from.state : (camp.entry || null);
+    this.stationHit = null;
+    this.levelIdx = this.startIdx = F;
+    try { await startRun(this.g, this.levels[F], this.epSeedState); } catch { /* retry next time */ }
     this.simSteps = 0; // game steps actually run this episode
     this.bot.faceDir = 1; // aim direction must not carry over from the previous run
     this.bot.act = 0;
@@ -1432,32 +1588,44 @@ export class PpoTrainer {
     this.resetting = false;
   }
 
-  // The level's exit was reached: score it like the end of an episode (the
-  // value of the next level is not this level's business), then carry the run
-  // on into the level the exit leads to, weapons and ammo included.
-  async advance(dest) {
-    if (this.lastObs !== null) {
-      this.traj.obs.push(this.lastObs);
-      this.traj.act.push(this.lastAct);
-      this.traj.rew.push(30);
-      this.traj.val.push(this.lastVal);
-      this.traj.lp.push(this.lastLp);
-      this.traj.done.push(1);
-      this.lastObs = null;
-    }
-    this.resetting = true;
-    this.successes++;
-    this.cleared++;
-    console.log(`[ppo] cleared ${this.levels[this.levelIdx]} -> level ${dest} (episode ${this.episodes + 1}, ${this.successes} cleared in total)`);
-    this.onStatus(`cleared level ${this.levelIdx} — on to level ${dest}`);
-    try { await this.g.start(this.levels[dest]); } catch { this.resetting = false; this.endEpisode(0, true, 'next level failed to load'); return; }
-    this.levelIdx = dest;
-    this.enterLevel();
-    if (this.traj.obs.length >= ROLLOUT && !this.updating) this.update();
-    this.resetting = false;
+  // This run, as the chain of pieces from the level's start: what the save
+  // station it started from already had, plus its own actions up to `nActs` /
+  // `steps`.
+  piecesSoFar(nActs, steps) {
+    const own = { seed: this.epSeedState, acts: encodeActs(this.recActs.slice(0, nActs)), steps };
+    return this.epFrom ? [...this.epFrom.pieces, own] : [own];
   }
 
-  endEpisode(termReward, done, how = null) {
+  // The level's exit was reached. If this is the frontier level, it is passed
+  // for good: the pieces that got through it join the campaign, the next
+  // level is loaded (the player keeps their weapons and ammo, as in the game)
+  // and its opening state becomes where every later run starts.
+  async passLevel(dest) {
+    const g = this.g;
+    const from = this.levelIdx;
+    const camp = loadCampaign();
+    const pieces = this.piecesSoFar(this.recActs.length, this.simSteps + (this.inUpdate ? 1 : 0));
+    this.cleared = 1;
+    this.successes++;
+    // score and record the run before the level under it changes
+    this.endEpisode(30, true, `reached the exit to level ${dest}`, false);
+    console.log(`[ppo] passed ${this.levels[from]} -> level ${dest} (episode ${this.episodes}, ${this.successes} in total)`);
+    if (from === camp.frontier && dest < this.levels.length) {
+      this.resetting = true;
+      this.onStatus(`passed level ${from} — training moves on to level ${dest}`);
+      try {
+        await g.start(this.levels[dest]);
+        saveCampaign({ frontier: dest, entry: snapshotState(g), legs: [...camp.legs, { level: from, dest, pieces }] });
+        for (const k of [BEST_KEY, HIST_KEY, STATIONS_KEY]) bigClear(k);
+        this.winRun = null; this.lastAttempt = null; // replays restart with the new level
+        this.onCampaign?.();
+      } catch (err) { console.error('[ppo] could not enter the next level:', err); }
+      this.resetting = false;
+    }
+    this.nextEpisode();
+  }
+
+  endEpisode(termReward, done, how = null, next = true) {
     if (this.resetting) return;
     // Keep the attempt (where it started + the inputs it was given) so it can
     // be replayed on screen.
@@ -1470,10 +1638,11 @@ export class PpoTrainer {
         how: `${how || (p.dead ? 'died' : 'gave up (no progress)')} on level ${this.levelIdx}`,
       };
       this.lastAttempt = att;
+      this.onAttempt?.(att);
       // the furthest any attempt has got; the latest one among equals
-      if (att.cleared > 0 && (!this.winRun || att.endIdx >= this.winRun.endIdx)) this.winRun = att;
+      if (att.cleared > 0) this.winRun = att; // a run that passed the level: shown once
     }
-    if (this.lastObs === null) { this.episodes++; this.nextEpisode(); return; } // ended right after a policy update: nothing to score
+    if (this.lastObs === null) { this.episodes++; if (next) this.nextEpisode(); return; } // ended right after a policy update: nothing to score
     this.traj.obs.push(this.lastObs);
     this.traj.act.push(this.lastAct);
     this.traj.rew.push(termReward);
@@ -1482,19 +1651,9 @@ export class PpoTrainer {
     this.traj.done.push(done ? 1 : 0);
     this.lastObs = null;
     this.episodes++;
-    const improved = this.maybeSaveBest();
-    if (improved) { this.seedOk = true; this.seedStrike = 0; }
-    else if (this.epSeeded) {
-      // Started from the best checkpoint but made no headway: likely a trap.
-      this.seedStrike++;
-      if (this.seedStrike >= 3) {
-        this.seedOk = false;
-        console.log('[ppo] checkpoint starts not improving — exploring from spawn');
-        this.onStatus('checkpoint stuck — exploring from spawn');
-      }
-    }
+    if (!this.cleared) this.maybeSaveBest(); // a run that passed its level is the campaign's, not a "best so far"
     if (this.traj.obs.length >= ROLLOUT && !this.updating) this.update();
-    this.nextEpisode();
+    if (next) this.nextEpisode();
   }
 
   // Between two training episodes: if a look is due, play it now (so no
@@ -1524,9 +1683,7 @@ export class PpoTrainer {
       level: this.levels[snap.lvl],
       levelIdx: snap.lvl,
       dist: Math.round(snap.dist * 10) / 10,
-      start: { idx: this.startIdx, seed: this.epSeedState }, // where the run began
-      acts: this.recActs.slice(0, snap.n), // its inputs up to the best point
-      steps: snap.steps,                   // ...which is this many game steps in
+      pieces: this.piecesSoFar(snap.n, snap.steps), // from the level's start to the best point
       end: snap.end,     // where the best point was
       state: snap.state, // exact checkpoint of the best point, to resume from
       episodes: this.episodes,
@@ -1543,12 +1700,12 @@ export class PpoTrainer {
       if (dup === -1) {
         hist.push(rec);
         hist.sort((a, b) => (betterRun(levelOf(a, this.levels), a.dist, levelOf(b, this.levels), b.dist) ? -1 : 1));
-        if (hist.length > 5) hist.length = 5;
+        if (hist.length > 3) hist.length = 3;
         localStorage.setItem(HIST_KEY, JSON.stringify(hist));
       }
     } catch { /* history is best-effort */ }
     this.net.save(); // checkpoint weights with the best run: the demo uses this model
-    console.log(`[ppo] best run saved: ${rec.level}, dist ${rec.dist}, ${rec.acts.length} actions (episode ${this.episodes})`);
+    console.log(`[ppo] best run saved: ${rec.level}, dist ${rec.dist}, ${rec.pieces.length} piece(s) (episode ${this.episodes})`);
     this.onStatus(`best run saved — level ${rec.levelIdx}, ${fmtDist(rec.dist)} from its exit`);
     return true;
   }
@@ -1593,7 +1750,7 @@ export class PpoTrainer {
         else {
           const what = this.showMode === 'best' ? 'walkthrough' : 'replay';
           const next = this.showEvery <= 0 ? '' : this.showDue ? ` · ${what} when this attempt ends` : ` · next ${what} in ${this.showEvery - (this.updates % this.showEvery)} updates`;
-          this.onStatus(`training (not shown) · run ${this.episodes + 1} on level ${this.levelIdx} · levels cleared ${this.successes} · upd ${this.updates}${next}${this.lastShow ? ` · ${this.lastShow}` : ''}`);
+          this.onStatus(`training (not shown) · run ${this.episodes + 1} on level ${this.levelIdx} · ${loadCampaign().legs.length} levels passed · upd ${this.updates}${next}${this.lastShow ? ` · ${this.lastShow}` : ''}`);
         }
       }
     } catch (err) {
@@ -1702,6 +1859,55 @@ export class PpoTrainer {
           break;
         }
       }
+    }
+    // Pickups: health regained (hearts, save stations) and ammo or weapons
+    // collected. A heart is only taken when the player is hurt, so this pays
+    // for picking one up when it is needed, not for walking past it at full
+    // health.
+    {
+      if (p.hp > this.prevHp) r += (p.hp - this.prevHp) * HEALTH;
+      this.prevHp = p.hp;
+      let ammo = 0;
+      for (const w in p.ammo) ammo += p.ammo[w];
+      if (p.owned.size > this.prevOwned) r += 3 * (p.owned.size - this.prevOwned);
+      else if (ammo > this.prevAmmo) r += PICKUP;
+      this.prevAmmo = ammo; this.prevOwned = p.owned.size;
+    }
+    // Save stations: using one pays once per station per run, and the first
+    // time any run uses a station it becomes a place later runs can start
+    // from. The checkpoint is taken here, between two game steps, so that it
+    // is exactly "this run after simSteps steps".
+    if (this.stationHit) {
+      const key = this.stationHit;
+      this.stationHit = null;
+      if (!this.paid.has(key)) {
+        this.paid.add(key);
+        r += STATION;
+        this.epNoProg = 0;
+        const list = loadStations(this.levelIdx);
+        if (!p.dead && !list.some((st) => st.key === key)) {
+          saveStations(this.levelIdx, [...list, { key, x: Math.round(p.x), y: Math.round(p.y), state: snapshotState(g), pieces: this.piecesSoFar(this.recActs.length, this.simSteps) }]);
+          console.log(`[ppo] save station ${key} reached on level ${this.levelIdx}: runs can now start there (${list.length + 1} station(s))`);
+          this.onStations?.();
+        }
+      }
+    }
+    // Switches: turning one on pays, once per switch per run, and so does
+    // getting closer to the nearest one that is still off. A step where the
+    // set of off switches changed is skipped: the distance then jumps to a
+    // different switch, which is not movement.
+    {
+      for (const e of g.entities) {
+        if (e.dead || e.aistate === 0 || !SWITCH_AI.has(e.ai) || this.paid.has(e)) continue;
+        this.paid.add(e);
+        r += SWITCH_ON;
+        this.epNoProg = 0; // the level has changed: worth staying alive for
+      }
+      const sw = switchDist(g);
+      if (sw.key === this.prevSwKey && isFinite(sw.dist) && isFinite(this.prevSw)) {
+        r += Math.max(-6, Math.min(6, (this.prevSw - sw.dist) * SWITCH_PULL));
+      }
+      this.prevSw = sw.dist; this.prevSwKey = sw.key;
     }
     // Trigger discipline with dense signal: firing while a hittable enemy is
     // in range AND in sight pays every decision, so sustained fire is rewarded
@@ -1866,8 +2072,9 @@ export class PpoTrainer {
           this.updates++;
           this.rollouts++;
           if (this.showEvery > 0 && this.updates % this.showEvery === 0) this.showDue = true;
-          if (this.maybeSaveBest()) { this.seedOk = true; this.seedStrike = 0; } // mid-episode progress counts too
+          this.maybeSaveBest(); // mid-episode progress counts too
           if (this.rollouts % 10 === 0) { this.net.save(); this.saveVisits(); }
+          this.onUpdateDone?.();
           const avg = done.rew.reduce((a, b) => a + b, 0) / u.n;
           console.log(`[ppo] update ${this.updates} · levels cleared ${this.successes} in ${this.episodes} runs · avgR ${avg.toFixed(2)}`);
           return;

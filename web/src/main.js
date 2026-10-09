@@ -1,8 +1,8 @@
 import { Game } from './game.js';
 import { WEAPON_ORDER } from './weapons.js';
 import { readPalette, T } from './spec.js';
-import { LEVELS, toggleDemo, replayBestRun } from './demo.js';
-import { PpoTrainer, hasTrainedPolicy, loadBestRun, loadBestHistory, fmtDist } from './ppo.js';
+import { LEVELS, toggleDemo, replayBestRun, replayCampaign } from './demo.js';
+import { PpoTrainer, hasTrainedPolicy, loadBestRun, loadBestHistory, fmtDist, loadCampaign, saveCampaign, saveStations, CAMPAIGN_KEY, STATIONS_KEY } from './ppo.js';
 
 const select = document.getElementById('level');
 for (const l of LEVELS) select.add(new Option(l, l));
@@ -25,6 +25,7 @@ const ppoBtn = document.getElementById('ppo');
 const ppoStatus = document.getElementById('ppoStatus');
 const pauseBtn = document.getElementById('pause');
 const replayBtn = document.getElementById('bestRun');
+const fullGameBtn = document.getElementById('fullGame');
 const bestRunSel = document.getElementById('bestRunSel');
 let ppoTrainer = null;
 // How often training pauses to play one run of the current policy on screen.
@@ -42,7 +43,11 @@ const bestEntries = () => {
 const refreshReplayBtn = () => {
   const entries = bestEntries();
   bestRunSel.innerHTML = '';
-  for (const e of entries) bestRunSel.add(new Option(`reached ${e.level.replace('.spe', '')}, ${fmtDist(e.dist)} from its exit${e.start && e.start.idx !== e.levelIdx ? ` (run began on level ${e.start.idx})` : ''}`));
+  for (const e of entries) bestRunSel.add(new Option(`${e.level.replace('.spe', '')}: ${fmtDist(e.dist)} from its exit`));
+  const camp = loadCampaign();
+  fullGameBtn.textContent = camp.legs.length
+    ? `Full game demo (${camp.legs.length} level${camp.legs.length > 1 ? 's' : ''} passed, now on ${camp.frontier})`
+    : 'Full game demo (no level passed yet)';
   bestRunSel.disabled = entries.length === 0;
   replayBtn.textContent = entries.length ? 'Replay best run' : 'Replay best run (none saved)';
 };
@@ -77,6 +82,42 @@ pauseBtn.addEventListener('click', () => {
   else ppoTrainer.pause();
   refreshPauseBtn();
 });
+// The whole recorded playthrough: every level passed so far, then the best
+// progress on the current one.
+fullGameBtn.addEventListener('click', () => {
+  if (trainingActive()) { ppoTrainer.stop(); ppoBtn.textContent = 'Train PPO'; demoUsesPpo(); refreshPauseBtn(); }
+  replayCampaign(game, fullGameBtn, select);
+  fullGameBtn.blur();
+});
+
+// Results of headless training (node web/tools/train.mjs writes train-out/ppo.json):
+// the trained policy, its best runs and exploration counts. Loading one replaces
+// what this browser has stored, so its best run can be replayed here.
+const loadTrainBtn = document.getElementById('loadTrain');
+const loadTrainFile = document.getElementById('loadTrainFile');
+loadTrainBtn.addEventListener('click', () => { loadTrainFile.click(); loadTrainBtn.blur(); });
+loadTrainFile.addEventListener('change', async () => {
+  const file = loadTrainFile.files[0];
+  loadTrainFile.value = '';
+  if (!file) return;
+  try {
+    const data = JSON.parse(await file.text());
+    if (data.format !== 'abuse-ppo-train-1' || !data.store) throw new Error('not a training file');
+    if (trainingActive()) { ppoTrainer.stop(); ppoBtn.textContent = 'Train PPO'; }
+    for (const [key, value] of Object.entries(data.store)) {
+      if (!key.startsWith('abuse.ppo.')) continue;
+      // the campaign can be too big for browser storage: it is then kept for this session only
+      if (key === CAMPAIGN_KEY) { if (value) saveCampaign(JSON.parse(value)); continue; }
+      if (key === STATIONS_KEY) { if (value) { const st = JSON.parse(value); saveStations(st.levelIdx, st.list); } continue; }
+      try { if (value == null) localStorage.removeItem(key); else localStorage.setItem(key, value); } catch { /* over quota: skip */ }
+    }
+    demoUsesPpo(); refreshReplayBtn(); refreshPauseBtn();
+    ppoStatus.textContent = `loaded training file (saved ${data.savedAt || 'unknown'})`;
+  } catch (err) {
+    ppoStatus.textContent = `could not load training file: ${err.message}`;
+  }
+});
+
 replayBtn.addEventListener('click', () => {
   if (trainingActive()) {
     ppoTrainer.stop();

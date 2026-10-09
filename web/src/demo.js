@@ -5,7 +5,7 @@
 // console and a summary table is printed when level 21 finishes.
 
 import { Bot } from './bot.js';
-import { PpoBot, hasTrainedPolicy, applyAction, actParts, loadBestRun, startRun, fmtDist } from './ppo.js';
+import { PpoBot, hasTrainedPolicy, applyAction, actParts, loadBestRun, startRun, decodeActs, campaignPieces } from './ppo.js';
 
 export const LEVELS = Array.from({ length: 22 }, (_, i) => `level${String(i).padStart(2, '0')}.spe`);
 
@@ -115,17 +115,20 @@ export function stopDemo(finished = false) {
   active = null;
 }
 
-// ---- best-run replay: plays back a run saved by the PPO trainer ----
+// ---- replays of what the PPO trainer recorded ----
 //
-// A saved run is where it started (level, and a checkpoint if it resumed from
-// one) plus the inputs it was given. Started the same way and fed the same
-// inputs, the game plays out identically, across level changes too.
+// A recording is a list of pieces. Each piece is the state it started from
+// (or the level's own fresh start), the action taken at each decision and how
+// many game steps it ran; started the same way and fed the same actions, the
+// game plays it out identically. Consecutive pieces join up exactly, so a list
+// of them is one continuous playthrough, across level changes too.
 
 class ReplayBot {
-  constructor(rec) { this.acts = rec.acts; this.steps = Math.min(rec.steps ?? rec.acts.length * 4, rec.acts.length * 4); this.i = 0; this.faceDir = 1; this.ended = false; }
+  constructor(piece) { this.acts = decodeActs(piece.acts); this.steps = Math.min(piece.steps, this.acts.length * 4); this.i = 0; this.faceDir = 1; this.act = 0; this.done = null; }
   step(g) {
-    if (!g.level || this.ended) return;
-    if (g.player.dead || this.i >= this.steps) { this.ended = true; g.onDemoTimeout?.(); return; }
+    if (!g.level || this.done) return;
+    if (g.player.dead) { this.done = 'died'; return; }
+    if (this.i >= this.steps) { this.done = 'end'; return; }
     if (this.i % 4 === 0) {
       this.act = this.acts[this.i / 4];
       const { move } = actParts(this.act);
@@ -136,11 +139,9 @@ class ReplayBot {
   }
 }
 
-export function replayBestRun(game, btn, select, recOverride = null) {
+function playPieces(game, btn, select, pieces, title) {
   if (active) { stopDemo(false); return; }
-  const rec = recOverride || loadBestRun();
-  if (!rec) { game.toast('No PPO best run saved yet — train first'); return; }
-
+  if (!pieces.length) { game.toast('Nothing recorded yet — train first'); return; }
   active = {
     game, btn, select,
     oldOnLevel: game.onLevel,
@@ -148,43 +149,51 @@ export function replayBestRun(game, btn, select, recOverride = null) {
     btnBaseText: btn.textContent,
   };
   const mine = active;
-  const startIdx = rec.start?.idx ?? Math.max(0, LEVELS.indexOf(rec.level));
-  let lvl = startIdx;
   select.disabled = true;
   game.demo = true;
   game.speed = 2;
   game.demoTimeoutTicks = 0;
+  game.onDemoStop = () => stopDemo(false);
+  game.onLevel = (name) => { mine.oldOnLevel?.(name); if (active === mine) game.toast(`${title} (2x): ${name}`); };
+  let k = -1, exited = false;
   const finish = (text) => {
     if (active !== mine) return;
-    game.hold = false;
     stopDemo(false);
     game.toast(text);
     console.log(`[replay] ${text}`);
   };
-  // exits behave as they did in the recorded run: on to a later level, or the end
-  game.nextLevel = (dest) => {
-    if (game.transitioning) return;
-    game.transitioning = true;
-    if (dest > lvl && dest < LEVELS.length) {
-      game.hold = true;
-      game.start(LEVELS[dest]).then(() => { lvl = dest; if (active === mine) game.hold = false; }, () => finish('Replay stopped: level failed to load'));
-    } else finish('Replay finished — took the last exit of the run');
+  // An exit ends the piece it is in; the next piece starts the next level.
+  game.nextLevel = () => { game.transitioning = true; exited = true; };
+  const next = () => {
+    if (active !== mine) return;
+    if (++k >= pieces.length) { finish(`${title} finished on level ${pieces[pieces.length - 1].levelIdx}`); return; }
+    const piece = pieces[k];
+    exited = false;
+    game.hold = true; // no steps until the piece is set up exactly as it was recorded
+    game.bot = null;
+    startRun(game, LEVELS[piece.levelIdx], piece.seed || null).then(() => {
+      if (active !== mine) return;
+      const bot = new ReplayBot(piece);
+      // the bot is stepped inside each game update; move on once it has run out
+      game.bot = { step: (g) => { bot.step(g); if (bot.done === 'died') finish(`${title} stopped: the run died on level ${piece.levelIdx}`); else if (bot.done || exited) { game.hold = true; game.bot = null; queueMicrotask(next); } } };
+      game.hold = false;
+    }, () => finish(`${title} stopped: level failed to load`));
   };
-  game.onDemoTimeout = () => finish(`Replay finished on level ${lvl}`);
-  game.onDemoStop = () => { game.hold = false; stopDemo(false); };
-  game.onLevel = (name) => {
-    mine.oldOnLevel?.(name);
-    if (active === mine) game.toast(`Replay (2x): ${name}`);
-  };
-  console.log(`[replay] best run: started on level ${startIdx}${rec.start?.seed ? ' from a checkpoint' : ''}, reached ${rec.level} (${fmtDist(rec.dist)} from its exit), ${rec.acts.length} actions`);
+  console.log(`[replay] ${title}: ${pieces.length} piece(s), levels ${[...new Set(pieces.map((p) => p.levelIdx))].join(' -> ')}`);
   btn.textContent = 'Replay: running (Esc stops)';
   btn.classList.add('on');
-  // no steps until the run has been set up exactly as it was recorded
-  game.hold = true;
-  game.bot = null;
-  startRun(game, LEVELS[startIdx], rec.start?.seed || null).then(() => {
-    if (active !== mine) return;
-    game.bot = new ReplayBot(rec);
-    game.hold = false;
-  }, () => finish('Replay stopped: level failed to load'));
+  next();
+}
+
+// The best run on the current level: from the level's start to its best point.
+export function replayBestRun(game, btn, select, recOverride = null) {
+  const rec = recOverride || loadBestRun();
+  if (!active && !rec) { game.toast('No PPO best run saved yet — train first'); return; }
+  playPieces(game, btn, select, rec ? rec.pieces.map((p) => ({ ...p, levelIdx: rec.levelIdx })) : [], 'Best run');
+}
+
+// Everything recorded so far as one playthrough: every level passed, in
+// order, then the best progress on the level the agent is on now.
+export function replayCampaign(game, btn, select) {
+  playPieces(game, btn, select, active ? [] : campaignPieces(), 'Full game');
 }
