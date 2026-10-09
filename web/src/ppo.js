@@ -293,7 +293,9 @@ export function buildObs(g, dist) {
 
 // ---- Dijkstra distance to the nearest exit (shared navigation model) ----
 
-const MAX_FALL = 80, MAX_JUMP = 8, MAX_CLIMB = 3;
+// MAX_CLIMB: a jump lifts the feet 51 px and the engine then steps the player
+// up onto anything within 16 px, so a ledge 4 rows (60 px) up can be mounted.
+const MAX_FALL = 80, MAX_JUMP = 8, MAX_CLIMB = 4;
 
 let lastPathDebug = null;
 export function pathDistDebug() { return lastPathDebug; }
@@ -325,8 +327,11 @@ const SOFT_AI = new Set(['sdoor_ai', 'strap_door_ai', 'hwall_ai', 'big_wall_ai',
 // their stops (and leaving the moving deck out keeps the graph fixed while one
 // travels); exits and teleporters are things the player walks into.
 const NOT_WALL_AI = new Set(['platform_ai', 'next_level_ai', 'tp2_ai', 'tpd_ai']);
+// A lift with a third link only runs while that object (a switch) is on (platform.lsp).
+const liftRuns = (e) => e.links.length < 3 || e.links[2].aistate !== 0;
 const isSoft = (e) => !!e && (SOFT_AI.has(e.ai) || !!e.shootable);
 const SOFT_COST = 15;
+const REACH = 3; // how many cells of walking one cell nearer the exit (through open space) is worth
 
 // The navigation graph over the tile grid: which cells are solid, which can be
 // stood on, and the moves out of each cell (walk, step up, climb, drop, jump,
@@ -429,6 +434,7 @@ export function navGraph(g, nextNum) {
       addJump(cellOf(e), e.links[0] ? cellOf(e.links[0]) : null, 4);
     } else if (e.ai === 'platform_ai') {
       const stops = (e.links || []).slice(0, 2).map((l) => stopCell(l.x, l.y));
+      if (!liftRuns(e)) continue; // waiting for its switch: somewhere to stand, not a ride
       ride(stops);
       // Vertical lifts pass through open chambers between their stops: the
       // player can hop off mid-ride, so connect intermediate rows too
@@ -480,9 +486,8 @@ export function navGraph(g, nextNum) {
       relax(c + s, r, 1, 'walk');
       if (r > 0) relax(c + s, r - 1, 1.5, 'stepup');
     }
-    // Jump up onto a ledge beside the player: the jump peaks 51 px up
-    // (3 rows of 15 px), so ledges 2 and 3 rows higher are in reach when
-    // there is headroom above the take-off cell.
+    // Jump up onto a ledge beside the player (up to MAX_CLIMB rows higher),
+    // when there is headroom above the take-off cell.
     for (let up = 2; up <= MAX_CLIMB; up++) {
       if (r - up - 2 >= 0 && hard(c, r - up - 2)) break; // head hits the ceiling first
       for (const s of [-1, 1]) relax(c + s, r - up, up + 0.5, 'climb');
@@ -634,6 +639,7 @@ function navSig(g, nextNum) {
   let s = `${g.level.name}|${nextNum}`;
   // Only the cells a solid covers matter (see navGraph), so animation frames
   // and sub-cell movement don't invalidate the field.
+  for (const e of liftsOf(g)) if (e.links.length >= 3) s += liftRuns(e) ? ';L1' : ';L0'; // lifts waiting for a switch
   for (const x of g.solids) {
     if (x.e && NOT_WALL_AI.has(x.e.ai)) continue;
     const soft = isSoft(x.e);
@@ -647,7 +653,6 @@ function buildField(g, nextNum) {
   const { N, grid, goals, expand } = navGraph(g, nextNum);
   const field = new Float64Array(N).fill(Infinity);
   field.grid = grid;
-  if (!goals.length) return field;
   // reversed edges as linked lists: head[to] -> edge -> next edge into `to`
   const head = new Int32Array(N).fill(-1);
   const eFrom = [], eCost = [], eNext = [];
@@ -657,17 +662,37 @@ function buildField(g, nextNum) {
     head[to] = eFrom.length - 1;
   };
   for (cur = 0; cur < N; cur++) expand(cur, emit);
-  const heap = makeHeap();
-  for (const gl of goals) if (field[gl] !== 0) { field[gl] = 0; heap.push(0, gl); }
-  while (heap.size) {
-    const to = heap.pop();
-    if (heap.key > field[to]) continue; // stale entry
-    for (let e = head[to]; e !== -1; e = eNext[e]) {
-      const from = eFrom[e];
-      const nd = field[to] + eCost[e];
-      if (nd < field[from]) { field[from] = nd; heap.push(nd, from); }
+  // shortest way back along the reversed moves, from wherever `dist` starts finite
+  const solve = (dist) => {
+    const heap = makeHeap();
+    for (let i = 0; i < N; i++) if (dist[i] !== Infinity) heap.push(dist[i], i);
+    while (heap.size) {
+      const to = heap.pop();
+      if (heap.key > dist[to]) continue; // stale entry
+      for (let e = head[to]; e !== -1; e = eNext[e]) {
+        const from = eFrom[e];
+        const nd = dist[to] + eCost[e];
+        if (nd < dist[from]) { dist[from] = nd; heap.push(nd, from); }
+      }
     }
-  }
+  };
+  for (const gl of goals) field[gl] = 0;
+  solve(field);
+  // "Reach" field, for when no walking route gets all the way to the exit
+  // (the graph cannot model every puzzle): the cost of WALKING, by legal
+  // moves only, to wherever is nearest the exit through open space. Every
+  // cell starts at REACH x its open-space distance and the walking moves are
+  // relaxed from there, so following it downhill never asks for something the
+  // player cannot do, like rising through a closed trap door, which the
+  // open-space distance alone happily does.
+  const flood = buildFlood(g, nextNum);
+  const reach = new Float64Array(N).fill(Infinity);
+  for (let i = 0; i < N; i++) if (flood[i] !== Infinity) reach[i] = REACH * flood[i];
+  solve(reach);
+  for (let i = 0; i < N; i++) reach[i] /= REACH;
+  reach.grid = grid;
+  field.reach = reach;
+  field.flood = flood;
   return field;
 }
 
@@ -710,7 +735,7 @@ function buildFlood(g, nextNum, targets = null) {
   for (const e of g.entities) {
     if (e.dead) continue;
     if ((e.ai === 'tp2_ai' || e.ai === 'tpd_ai') && e.links[0]) link(bodyCell(e), bodyCell(e.links[0]), 4);
-    else if (e.ai === 'platform_ai' && e.links.length >= 2) {
+    else if (e.ai === 'platform_ai' && e.links.length >= 2 && liftRuns(e)) {
       const a = bodyCell(e.links[0]), b = bodyCell(e.links[1]);
       link(a, b, 8); link(b, a, 8);
     }
@@ -743,21 +768,40 @@ function buildFlood(g, nextNum, targets = null) {
   return flood;
 }
 
+// The fields for a world state, most recently used first. Several are kept:
+// runs start from different places (the level's start, each save station) and
+// every destroyed wall or opened door is a new state, but the same states come
+// round again and again, and solving one takes tens of milliseconds.
 let fieldCache = null;
+const fieldCaches = new Map();
+function useFields(g, nextNum) {
+  const sig = navSig(g, nextNum);
+  if (fieldCache && fieldCache.sig === sig) return;
+  fieldCache = fieldCaches.get(sig);
+  if (fieldCache) fieldCaches.delete(sig); // re-inserted below as the newest
+  else { fieldCache = { sig, field: buildField(g, nextNum), sw: new Map() }; navStats.builds++; }
+  fieldCaches.set(sig, fieldCache);
+  if (fieldCaches.size > 48) fieldCaches.delete(fieldCaches.keys().next().value);
+}
+// the lifts of the level as currently loaded (its objects are new on every load)
+let liftCache = { level: null, list: [] };
+const liftsOf = (g) => {
+  if (liftCache.level !== g.level) liftCache = { level: g.level, list: g.entities.filter((e) => e.ai === 'platform_ai' && e.links.length >= 2) };
+  return liftCache.list;
+};
 export const navStats = { builds: 0, lookups: 0 };
 
 // Both fields for the current world state (diagnostics and tooling).
 export function navFields(g, nextNum = null) {
   navDist(g, nextNum);
-  return { field: fieldCache.field, flood: (fieldCache.flood ??= buildFlood(g, nextNum)) };
+  return { field: fieldCache.field, flood: fieldCache.field.flood, reach: fieldCache.field.reach };
 }
 
 // Open-space distance to the exit (see buildFlood); Infinity only where the
 // player is sealed off from it by hard walls.
 export function floodDist(g, nextNum = null) {
-  const sig = navSig(g, nextNum);
-  if (!fieldCache || fieldCache.sig !== sig) { fieldCache = { sig, field: buildField(g, nextNum) }; navStats.builds++; }
-  return readFlood(g, (fieldCache.flood ??= buildFlood(g, nextNum)));
+  useFields(g, nextNum);
+  return readFlood(g, fieldCache.field.flood);
 }
 
 function readFlood(g, flood) {
@@ -789,8 +833,7 @@ export function switchDist(g) {
   // are cached per (level state, exit), and asking with a different exit
   // would throw the cache away and rebuild it on every call.
   const nextNum = +(/(\d+)/.exec(g.level.name) || [0, 0])[1] + 1;
-  const sig = navSig(g, nextNum);
-  if (!fieldCache || fieldCache.sig !== sig) { fieldCache = { sig, field: buildField(g, nextNum) }; navStats.builds++; }
+  useFields(g, nextNum);
   let off = null, key = '';
   for (const e of g.entities) {
     if (e.dead || e.aistate !== 0 || !SWITCH_AI.has(e.ai)) continue;
@@ -798,8 +841,10 @@ export function switchDist(g) {
     key += `${e.id},`;
   }
   if (!off) return { dist: Infinity, key, nearest: null };
-  if (!fieldCache.sw || fieldCache.sw.key !== key) fieldCache.sw = { key, flood: buildFlood(g, nextNum, off) };
-  const dist = readFlood(g, fieldCache.sw.flood);
+  // one field per set of switches still off (kept: switches get pressed in the same few orders)
+  let swFlood = fieldCache.sw.get(key);
+  if (!swFlood) { swFlood = buildFlood(g, nextNum, off); fieldCache.sw.set(key, swFlood); if (fieldCache.sw.size > 16) fieldCache.sw.delete(fieldCache.sw.keys().next().value); }
+  const dist = readFlood(g, swFlood);
   // the nearest in a straight line, for the agent's view
   const p = g.player;
   let nearest = null, bd = Infinity;
@@ -810,12 +855,16 @@ export function switchDist(g) {
 // Offset that ranks every open-space reading behind every walking-route one.
 export const OPEN = 1e6;
 
-// The distance the trainer steers by: the walking route where there is one,
-// otherwise the open-space distance (+OPEN), otherwise Infinity (no reading
-// here; callers keep their previous value rather than guess).
+// The distance the trainer steers by: the walking route to the exit where
+// there is one; otherwise (+OPEN) the "reach" distance, walking as near to the
+// exit as legal moves allow; otherwise the plain open-space distance;
+// otherwise Infinity (no reading here; callers keep their previous value
+// rather than guess).
 export function exitDist(g, nextNum = null) {
   const walk = navDist(g, nextNum);
   if (walk !== Infinity) return walk;
+  const reach = readWalk(g, fieldCache.field.reach);
+  if (reach !== Infinity) return OPEN + reach;
   const open = floodDist(g, nextNum);
   return open === Infinity ? Infinity : OPEN + open;
 }
@@ -827,18 +876,21 @@ export const fmtDist = (d) => (!isFinite(d) ? '?' : d >= OPEN ? `~${(d - OPEN).t
 // Path distance (in cells) from the player to the nearest exit that advances
 // to level `nextNum`; Infinity when no route exists. Cheap after the first call.
 export function navDist(g, nextNum = null) {
-  const sig = navSig(g, nextNum);
-  if (!fieldCache || fieldCache.sig !== sig) { fieldCache = { sig, field: buildField(g, nextNum) }; navStats.builds++; }
+  useFields(g, nextNum);
   navStats.lookups++;
-  const { field } = fieldCache;
+  return readWalk(g, fieldCache.field);
+}
+
+// Reads a walking-graph field at the player (on a lift, in a narrow passage,
+// or in mid-air included).
+function readWalk(g, field) {
   const W = g.level.fgW, H = g.level.fgH;
   // Riding a lift: the graph only knows its two stops, so in between the
   // distance is read off the ride itself, sliding evenly from one stop's value
   // to the other's. (Looked up by cell, a ride reads as hanging in mid-air and
   // the distance climbs most of the way up, which punishes taking the lift.)
   const p = g.player;
-  fieldCache.lifts ??= g.entities.filter((e) => e.ai === 'platform_ai' && e.links.length >= 2);
-  for (const e of fieldCache.lifts) {
+  for (const e of liftsOf(g)) {
     if (e.dead) continue;
     const deck = g.deckRect(e);
     // on the deck, or hopping just above it (a jump peaks 51 px up)
@@ -1043,6 +1095,31 @@ const actParts = (act) => ({
 
 export { actParts };
 
+// Which weapon to hold is chosen for the agent, like its aim: it has no
+// weapon keys of its own, and without this it would carry rockets through a
+// whole level and never fire one.
+//  - at something tough (a breakable wall, a gun turret, a juggernaut, a
+//    boulder) it uses rockets, when it has them and the target is far enough
+//    away not to be caught in the blast;
+//  - otherwise the plasma gun if it has ammo, else the machine gun;
+//  - a machine gun with no ammo (it still fires, slowly) gives way to
+//    anything that has some.
+const TOUGH_AI = new Set(['spray_gun_ai', 'track_ai', 'jug_ai', 'bolder_ai', 'rob1_ai']);
+function chooseWeapon(g, target, wall) {
+  const p = g.player;
+  const has = (w) => p.owned.has(w) && (p.ammo[w] || 0) > 0;
+  const aim = target || wall;
+  const far = aim && Math.abs(aim.x - p.x) + Math.abs(aim.y - p.y) > 90;
+  let want = has('PGUN') ? 'PGUN' : 'MGUN';
+  if (far && has('ROCKET') && (wall || TOUGH_AI.has(target.ai))) want = 'ROCKET';
+  else if (want === 'MGUN' && !has('MGUN')) {
+    if (far && has('ROCKET')) want = 'ROCKET';
+    else if (far && has('GRENADE')) want = 'GRENADE';
+    else if (far && has('FIREBOMB')) want = 'FIREBOMB';
+  }
+  if (p.weapon !== want) g.selectWeapon(want);
+}
+
 // Applies an action through the same input fields the human/bot use.
 export function applyAction(g, act, faceDir = 1) {
   const { move, jump, down, fire } = actParts(act);
@@ -1070,7 +1147,15 @@ export function applyAction(g, act, faceDir = 1) {
     const deck = g.deckRect(e);
     if (deck && g.overDeck(deck) && Math.abs(g.player.y - deck.y0) < 60) rideLock = true;
   }
-  if (down && !rideLock) g.keys.add('ArrowDown');
+  // The same goes for a two-way switch that is already on: pressing it again
+  // turns it off and shuts whatever it opened. The agent leaves switches on.
+  let switchLock = false;
+  for (const e of g.entities) {
+    if (e.ai !== 'switcher_ai' || e.aistate !== 2 || e.dead) continue;
+    // a little wider than the switch's own reach (20 x 30): the player moves between decisions
+    if (Math.abs(g.player.x - e.x) < 34 && Math.abs(g.player.y - e.y) < 44) { switchLock = true; break; }
+  }
+  if (down && !rideLock && !switchLock) g.keys.add('ArrowDown');
   // Aim at the nearest visible enemy that can actually be hit; otherwise
   // straight ahead. Dormant enemies (flyer_ai in aistate 0 is not targetable
   // and takes no damage, flyer.lsp) are skipped, or the aim locks onto them
@@ -1106,6 +1191,7 @@ export function applyAction(g, act, faceDir = 1) {
   if (target) g.mouse = { x: target.x - g.cam.x, y: target.y - 12 - g.cam.y };
   else if (wall) g.mouse = { x: wall.x - g.cam.x, y: wall.y - g.cam.y };
   else g.mouse = { x: p.x + faceDir * 120 - g.cam.x, y: p.y - 20 - g.cam.y };
+  chooseWeapon(g, target, wall);
   g.mouseDown = fire;
 }
 
@@ -1376,8 +1462,9 @@ export class PpoTrainer {
     g.bot = this.bot;
     this.bot.faceDir = 1;
     this.bot.act = 0;
-    const total = Math.min(att.steps, att.acts.length * 4);
-    const rp = this.replay = { att, n: 0, total, acc: 0, exited: false, lvl: att.startIdx, loading: null };
+    const full = Math.min(att.steps, att.acts.length * 4);
+    const total = att.stallAt == null ? full : Math.min(full, att.stallAt + 60 * 6);
+    const rp = this.replay = { att, n: 0, total, full, acc: 0, exited: false, lvl: att.startIdx, loading: null };
     g.nextLevel = () => { g.transitioning = true; rp.exited = true; }; // a run ends at an exit
     // run the part that is not shown at full speed, unseen
     const skip = Math.max(0, total - (att === this.winRun ? REPLAY_WIN : REPLAY_TAIL));
@@ -1394,7 +1481,7 @@ export class PpoTrainer {
   replayLabel() {
     const a = this.replay.att;
     const what = a.cleared ? `the run that passed level ${a.startIdx}` : 'the latest attempt';
-    return `replaying ${what}: episode ${a.episode}, ${a.how}`;
+    return `replaying ${what}: episode ${a.episode}, ${a.how}${a.stallAt != null ? ' (shown up to where it stopped getting anywhere)' : ''}`;
   }
 
   // One 60 Hz step of the replay, fed the recorded action for that decision.
@@ -1421,7 +1508,7 @@ export class PpoTrainer {
     g.renderThrottle = HIDDEN; // hold this last frame while training continues
     // The replay should finish exactly where the recorded run did.
     const off = Math.abs(p.x - a.end[0]) + Math.abs(p.y - a.end[1]);
-    if ((off > 4 || rp.lvl !== a.endIdx) && !rp.exited) console.warn(`[ppo] replay of episode ${a.episode} ended on level ${rp.lvl}, ${Math.round(off)}px from where the recorded run did (level ${a.endIdx})`);
+    if (rp.total === rp.full && (off > 4 || rp.lvl !== a.endIdx) && !rp.exited) console.warn(`[ppo] replay of episode ${a.episode} ended on level ${rp.lvl}, ${Math.round(off)}px from where the recorded run did (level ${a.endIdx})`);
     this.lastShow = `shown: ${a.cleared ? `the run that passed level ${a.startIdx}` : 'latest attempt'}, episode ${a.episode}, ${a.how}`;
     this.onStatus(this.lastShow);
     this.reset();
@@ -1567,6 +1654,10 @@ export class PpoTrainer {
       this.onStatus(`passed level ${from} — training moves on to level ${dest}`);
       try {
         await g.start(this.levels[dest]);
+        // A concession: the machine gun is topped up to its starting 100 rounds
+        // on entering a level. Otherwise one run that arrived empty-handed
+        // would be how every later run starts this level.
+        g.player.ammo.MGUN = Math.max(g.player.ammo.MGUN || 0, 100);
         saveCampaign({ frontier: dest, entry: snapshotState(g), legs: [...camp.legs, { level: from, dest, pieces }] });
         for (const k of [BEST_KEY, HIST_KEY, STATIONS_KEY]) bigClear(k);
         this.winRun = null; this.lastAttempt = null; // replays restart with the new level
@@ -1586,6 +1677,9 @@ export class PpoTrainer {
       const att = {
         startIdx: this.startIdx, seed: this.epSeedState, acts: this.recActs.slice(),
         steps: this.simSteps + (this.inUpdate ? 1 : 0), end: [Math.round(p.x), Math.round(p.y)],
+        // a run that gave up spent its last minute getting nowhere: when
+        // replayed, it is shown up to a few seconds past its last progress
+        stallAt: !how && !p.dead ? Math.max(0, this.simSteps - this.epNoProg) : null,
         endIdx: this.levelIdx, cleared: this.cleared, episode: this.episodes + 1,
         how: `${how || (p.dead ? 'died' : 'gave up (no progress)')} on level ${this.levelIdx}`,
       };
@@ -1747,7 +1841,7 @@ export class PpoTrainer {
       const gain = (this.prevDist >= OPEN) === fallback ? this.prevDist - effDist : 0;
       // Progress pays and retreat costs the same amount, so stepping back and
       // forth over a cell boundary nets zero instead of farming reward.
-      r += Math.max(-12, Math.min(12, gain * (fallback ? 1.5 : COMPASS)));
+      r += Math.max(-12, Math.min(12, gain * (fallback ? 3 : COMPASS)));
     }
     this.prevDist = effDist;
     const enemyCount = g.entities.filter((e) => !e.dead && e.shootable && ENEMY_AI.has(e.ai)).length;
@@ -1828,10 +1922,18 @@ export class PpoTrainer {
         this.paid.add(key);
         r += STATION;
         this.epNoProg = 0;
+        // The checkpoint kept for a station is the one saved with the most
+        // switches on. Levels are opened up by their switches, and a run that
+        // presses one and then saves has banked that progress: later runs
+        // start there with the doors it opened still open.
         const list = loadStations(this.levelIdx);
-        if (!p.dead && !list.some((st) => st.key === key)) {
-          saveStations(this.levelIdx, [...list, { key, x: Math.round(p.x), y: Math.round(p.y), state: snapshotState(g), pieces: this.piecesSoFar(this.recActs.length, this.simSteps) }]);
-          console.log(`[ppo] save station ${key} reached on level ${this.levelIdx}: runs can now start there (${list.length + 1} station(s))`);
+        let sw = 0;
+        for (const e of g.entities) if (!e.dead && e.aistate !== 0 && SWITCH_AI.has(e.ai)) sw++;
+        const old = list.find((st) => st.key === key);
+        if (!p.dead && (!old || sw > (old.sw || 0))) {
+          const st = { key, sw, x: Math.round(p.x), y: Math.round(p.y), state: snapshotState(g), pieces: this.piecesSoFar(this.recActs.length, this.simSteps) };
+          saveStations(this.levelIdx, old ? list.map((x) => (x === old ? st : x)) : [...list, st]);
+          console.log(`[ppo] save station ${key} on level ${this.levelIdx}: ${old ? `saved again with ${sw} switch(es) on (was ${old.sw || 0})` : `reached, runs can now start there (${list.length + 1} station(s))`}`);
           this.onStations?.();
         }
       }

@@ -651,20 +651,107 @@ function antCrack(e, g) {
   return true;
 }
 
+// common.lsp push_char: a player level with or above the object, within
+// `ya` of it vertically and `xa` horizontally, is shoved out sideways to
+// exactly `xa` away (walls permitting).
+function pushChar(e, g, xa, ya) {
+  const p = g.player;
+  // (+2: the port's player stands a pixel lower than an object on the same floor)
+  if (p.dead || p.y > e.y + 2 || Math.abs(p.y - e.y) >= ya || Math.abs(p.x - e.x) >= xa) return;
+  g.pushPlayer(p.x > e.x ? xa - (p.x - e.x) : (e.x - p.x) - xa);
+}
+
+// ROB1, the cleaner robot — jugger.lsp rob1_ai. It waits (hidden, if
+// rob_hiden is set) for its link to switch on, then trundles the way it faces
+// at xvel pixels a tick, shoving the player along in front of it, until it
+// can no longer see 23 pixels ahead. It never turns round. It takes 70
+// damage to destroy.
+function rob1(e, g) {
+  if (e.fade > 0) e.fade--;
+  const hidden = e.lv?.rob_hiden === 1;
+  switch (e.aistate) {
+    case 0:
+      if (hidden) { e.shootable = false; e.setState('rob_hiding'); } // the empty frame
+      else { e.shootable = true; pushChar(e, g, 30, 55); }
+      if (e.links.length < 1 || link0(e).aistate !== 0) {
+        if (hidden) e.fade = 15;
+        goState(e, 1);
+      }
+      return true;
+    case 1: {
+      e.shootable = true;
+      pushChar(e, g, 30, 55);
+      // the one-frame hiding sequence ends at once, and a finished sequence
+      // falls back to "stopped" (objects.cpp next_sequence): the robot appears
+      if (!e.nextPicture() && e.state === 'rob_hiding') e.setState('stopped');
+      if (e.stateTime % 6 === 0) g.sound('cleaner', e.x, e.y);
+      g.moveEntity(e, 0, 10); // (try_move 0 10): settle onto the floor
+      const eye = e.y - 10;   // sight line at body height (e.y is the floor line here)
+      const step = Math.abs(e.xvel) || 2;
+      if (e.dir > 0) { if (g.sees(e.x, eye, e.x + step + 23, eye)) e.x += step; }
+      else if (g.sees(e.x, eye, e.x - step - 23, eye)) e.x -= step;
+      if (e.hp <= 0) {
+        for (const [dx, dy] of [[5, 10], [-5, 15], [10, 2], [-10, 20], [20, 27], [-25, 30], [20, 5], [-3, 1]]) g.effect('EXPLODE1', e.x + dx, e.y - dy);
+        g.sound('explode', e.x, e.y);
+        goState(e, 2);
+      }
+      return true;
+    }
+    default:
+      pushChar(e, g, 30, 55);
+      return e.stateTime < 3;
+  }
+}
+
+// BOLDER — duong.lsp bolder_ai on objects.cpp float_tick. The boulder hangs
+// where it was placed until its first link (a sensor or switch) is on, then
+// falls and bounces. float_tick makes one straight move and stops at the first
+// thing it hits; it does not walk up steps like a character (so a boulder
+// bounces off a ledge instead of rolling over it), and what it hit decides the
+// bounce: off a floor or ceiling the fall is reversed (keeping all but 2 of
+// its speed), off a wall the roll is.
 function boulder(e, g) {
   const a = e.a;
   if (e.links.length && link0(e).aistate === 0) return true;
   if (e.hp <= 0) { g.explode(e.x, e.y - 10, 30, 10, false); return false; }
-  if (!a.init) { e.vx = e.xvel || -4; e.vy = e.yvel || 0; a.init = true; }
+  // The level stores each boulder's own speed; 0 is a real value (a boulder
+  // that drops straight down), not "use the default".
+  if (!a.init) { e.vx = e.xvel; e.vy = e.yvel; a.init = true; }
   e.nextPicture();
   if (a.cd > 0) a.cd--;
   e.vy += 1;
   const ox = e.vx, oy = e.vy;
-  const m = g.moveEntity(e, e.vx, e.vy);
-  if (m.down || m.up) {
-    if (Math.abs(oy) > 3) g.sound('antland', e.x, e.y);
-    e.vy = oy > 1 ? 2 - oy : -oy;
-  } else if (m.blockedX) e.vx = -ox;
+  // It collides with its sprite's boundary outline (bold.spe: 38 x 27, inside
+  // a 51 x 43 picture), not the whole picture. Measured by the picture, a
+  // boulder set in a shaft just taller than the outline is "already inside
+  // the ceiling" and never moves at all.
+  if (!a.box) {
+    const r = g.rectOf(e), d = g.deckRect(e);
+    a.box = r && d ? { hw: Math.max(e.x - d.x0, d.x1 - e.x), top: e.y - d.y0, bot: e.y - d.y1 } : { hw: 19, top: 35, bot: 8 };
+  }
+  const { hw, top, bot } = a.box;
+  const free = (x, y) => !g.boxHits(x, y - bot, hw, top - bot, e);
+  // the straight move, a pixel at a time
+  const n = Math.max(Math.abs(ox), Math.abs(oy));
+  let k = 0;
+  while (k < n && free(e.x + (ox * (k + 1)) / n, e.y + (oy * (k + 1)) / n)) k++;
+  const dx = n ? (ox * k) / n : 0, dy = n ? (oy * k) / n : 0;
+  g.pushRiders(e, dx, dy); // platform_push: whoever stands on it goes with it
+  e.x += dx; e.y += dy;
+  if (k < n) {
+    // which way was it blocked? (float_tick tests one pixel along each axis)
+    let vert, horiz;
+    if (ox === 0) { vert = true; horiz = false; } else if (oy === 0) { vert = false; horiz = true; } else {
+      horiz = !free(e.x + Math.sign(ox), e.y);
+      vert = !free(e.x, e.y + Math.sign(oy));
+      if (!horiz && !vert) horiz = vert = true;
+    }
+    if (vert) {
+      if (Math.abs(oy) > 3) g.sound('antland', e.x, e.y);
+      e.vx = ox;
+      e.vy = oy > 1 ? 2 - oy : -oy;
+    } else if (horiz) { e.vy = oy; e.vx = -ox; }
+  }
   if (!a.cd && g.touchesPlayer(e)) { g.hurtPlayer(15); a.cd = 4; }
   return true;
 }
@@ -934,6 +1021,7 @@ export const behaviors = {
   lightin_ai: lightning,
   crack_ai: antCrack,
   bolder_ai: boulder,
+  rob1_ai: rob1,
   jug_ai: jugger,
   exp_ai: effect,
   animate_ai: (e) => { e.nextPicture(); return true; },

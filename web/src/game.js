@@ -59,6 +59,7 @@ export class Game {
     this.level = null;
     this.entities = [];
     this.solids = [];
+    this.around = new Set(); // solid objects the player is currently inside (see freePlayer)
     this.ladders = [];
     this.projs = [];
     this.player = null;
@@ -305,10 +306,14 @@ export class Game {
     return false;
   }
 
+  // `ignore`: an object whose own solid is skipped, or `this.around`: the set
+  // of objects the player is already inside (see freePlayer).
   boxHits(x, y, hw, bh, ignore) {
     const l = Math.floor(x - hw), r = Math.floor(x + hw), top = Math.floor(y - bh), yy = Math.floor(y);
+    const set = ignore instanceof Set ? ignore : null;
     for (const s of this.solids) {
-      if (s.e !== ignore && r >= s.x0 && l <= s.x1 && yy - 1 >= s.y0 && top <= s.y1) return true;
+      if (set ? set.has(s.e) : s.e === ignore) continue;
+      if (r >= s.x0 && l <= s.x1 && yy - 1 >= s.y0 && top <= s.y1) return true;
     }
     for (let py = top; py < yy; py += 4) if (this.tileSolid(l, py) || this.tileSolid(r, py)) return true;
     if (this.tileSolid(l, yy - 1) || this.tileSolid(r, yy - 1)) return true;
@@ -426,7 +431,8 @@ export class Game {
       // can_block objects (BLOCK, STEP, ROB1...) use per-frame art: states like
       // "step_gone" / "rob_hiding" draw an empty frame and don't block.
       if (canBlock && !SOLID_AI.has(e.ai) && (e.state === 'running' || e.state === 'dieing' || e.state === 'rob_hiding')) continue;
-      const r = e.ai === 'platform_ai' ? this.deckRect(e) : this.rectOf(e);
+      // lifts, boulders and the cleaner robot block with their boundary outline, not the whole picture
+      const r = e.ai === 'platform_ai' || e.ai === 'bolder_ai' || e.ai === 'rob1_ai' ? this.deckRect(e) : this.rectOf(e);
       if (r) this.solids.push({ ...r, e });
     }
   }
@@ -764,10 +770,11 @@ export class Game {
       else if (jump && p.ground) p.jumpQueued = true; // taken on the next tick
 
       const wasGround = p.ground;
+      this.freePlayer();
       this.moveX(p, p.vx * dt);
       if (wasGround && p.vy >= 0) {
         let d = 0;
-        while (d < 6 && !this.boxHits(p.x, p.y + 1, HALF_W, BODY_H, null) && !this.boxHits(p.x, p.y, HALF_W, BODY_H, null)) { p.y++; d++; }
+        while (d < 6 && !this.boxHits(p.x, p.y + 1, HALF_W, BODY_H, this.around) && !this.boxHits(p.x, p.y, HALF_W, BODY_H, this.around)) { p.y++; d++; }
       }
       this.moveY(p, p.vy * dt);
       if (p.y > this.level.fgH * this.th + 100) {
@@ -832,17 +839,40 @@ export class Game {
     this.cam.y = Math.max(0, Math.min(this.cam.y, this.level.fgH * this.th - VIEW_H));
   }
 
+  // A solid object can move onto the player: a boulder rolls over them, a
+  // lift comes down, a door shuts. The original's collision lets a character
+  // that is already inside an object walk back out of it; with plain boxes the
+  // player would be held fast, unable to move at all. So objects the player's
+  // body already overlaps do not block the player until they are clear of them.
+  freePlayer() {
+    const p = this.player;
+    const l = Math.floor(p.x - HALF_W), r = Math.floor(p.x + HALF_W), top = Math.floor(p.y - BODY_H), yy = Math.floor(p.y);
+    this.around.clear();
+    for (const s of this.solids) if (r >= s.x0 && l <= s.x1 && yy - 1 >= s.y0 && top <= s.y1) this.around.add(s.e);
+    return this.around.size ? this.around : null;
+  }
+
+  // Shoves the player sideways (push_char), stopping at walls.
+  pushPlayer(dx) {
+    const p = this.player;
+    if (p.dead || !dx) return;
+    this.freePlayer();
+    const vx = p.vx;
+    this.moveX(p, dx);
+    p.vx = vx; // being pushed into a wall does not kill the player's own speed
+  }
+
   moveX(p, dx) {
     const n = Math.ceil(Math.abs(dx));
     const s = Math.sign(dx);
     for (let i = 0; i < n; i++) {
       const nx = p.x + s * Math.min(1, Math.abs(dx) - i);
-      if (!this.boxHits(nx, p.y, HALF_W, BODY_H, null)) { p.x = nx; continue; }
+      if (!this.boxHits(nx, p.y, HALF_W, BODY_H, this.around)) { p.x = nx; continue; }
       // The original has no fixed step-up cap: the boundary walk in the C++
       // lets the player run up the level's staircase steps (up to ~13 px).
       // 16 px reproduces that climb while walls taller than the body still stop.
       let up = 1;
-      while (up <= 16 && this.boxHits(nx, p.y - up, HALF_W, BODY_H, null)) up++;
+      while (up <= 16 && this.boxHits(nx, p.y - up, HALF_W, BODY_H, this.around)) up++;
       if (up <= 16) { p.x = nx; p.y -= up; } else { p.vx = 0; break; }
     }
   }
@@ -855,11 +885,11 @@ export class Game {
     // This is the same body test that stops a fall, so the player counts as
     // standing wherever they are held up — on a ramp the support is under the
     // uphill edge of the body, not under its centre.
-    if (n === 0) { p.ground = this.boxHits(p.x, p.y + 1, HALF_W, BODY_H, null); return; }
+    if (n === 0) { p.ground = this.boxHits(p.x, p.y + 1, HALF_W, BODY_H, this.around); return; }
     p.ground = false;
     for (let i = 0; i < n; i++) {
       const ny = p.y + s * Math.min(1, Math.abs(dy) - i);
-      if (!this.boxHits(p.x, ny, HALF_W, BODY_H, null)) { p.y = ny; continue; }
+      if (!this.boxHits(p.x, ny, HALF_W, BODY_H, this.around)) { p.y = ny; continue; }
       if (s > 0) {
         p.ground = true;
         // The original zeroes the fixed-point state when the fall is blocked.

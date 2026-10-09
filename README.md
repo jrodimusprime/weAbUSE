@@ -36,11 +36,11 @@ Below the screen the original status bar (`art/statbar.spe`) is drawn — health
 ## Status
 
 Working: all 22 levels, tiles and parallax, per-pixel lighting with ambient areas and dimmer switches,
-the player, seven weapons, ants, flyers, gun turrets, juggernauts, bombs, mines, lava, boulders, doors,
+the player, seven weapons, ants, flyers, gun turrets, juggernauts, cleaner robots, bombs, mines, lava, boulders, doors,
 switches, logic gates, sensors, elevators, ladders, springs, teleporters, force fields, save stations,
 training hints with the original voice-overs, speed and flight power-ups, and sound effects.
 
-Not done yet: robots (`ROB1`), the boss, music, saving and menus.
+Not done yet: the boss, music, saving and menus.
 
 ## How it works
 

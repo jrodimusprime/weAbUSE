@@ -163,7 +163,7 @@ async function main() {
     lines.push(camp.legs.length
       ? `Levels passed: ${camp.legs.map((l) => `${l.level}→${l.dest} (${Math.round(l.pieces.reduce((a, p) => a + p.steps, 0) / 60)}s of play)`).join(', ')}. Now on level ${camp.frontier}.`
       : 'Levels passed: none yet. Still on level 0.');
-    lines.push(stations.length ? `Save stations reached on level ${camp.frontier} (runs start from these or the level's start): ${stations.map((st) => `(${st.key})`).join(' ')}` : `Save stations reached on level ${camp.frontier}: none yet, so every run starts at the level's start.`);
+    lines.push(stations.length ? `Save stations reached on level ${camp.frontier} (runs start from these or the level's start): ${stations.map((st) => `(${st.key}, ${st.sw || 0} switch${st.sw === 1 ? '' : 'es'} on)`).join(' ')}` : `Save stations reached on level ${camp.frontier}: none yet, so every run starts at the level's start.`);
     lines.push(rec ? `Best on level ${camp.frontier}: ${ppo.fmtDist(rec.dist)} from its exit, at (${rec.end}).` : `Best on level ${camp.frontier}: nothing recorded yet.`);
     lines.push('');
     lines.push('Runs played on each level:');
@@ -208,7 +208,11 @@ async function main() {
       if (!u.stations) continue;
       const st = JSON.parse(u.stations);
       if (st.levelIdx !== frontier()) continue;
-      for (const one of st.list) if (!stations.some((x) => x.key === one.key)) { stations.push(one); sendStations = true; console.log(`  ** save station (${one.key}) reached on level ${frontier()} (${((performance.now() - t0) / 60000).toFixed(1)} min)`); }
+      for (const one of st.list) {
+        const i = stations.findIndex((x) => x.key === one.key);
+        if (i < 0) { stations.push(one); sendStations = true; console.log(`  ** save station (${one.key}) reached on level ${frontier()} (${((performance.now() - t0) / 60000).toFixed(1)} min)`); }
+        else if ((one.sw || 0) > (stations[i].sw || 0)) { stations[i] = one; sendStations = true; console.log(`  ** save station (${one.key}) saved again with ${one.sw} switch(es) on (${((performance.now() - t0) / 60000).toFixed(1)} min)`); }
+      }
     }
     for (const u of ups) {
       total.decisions += u.round.decisions;
