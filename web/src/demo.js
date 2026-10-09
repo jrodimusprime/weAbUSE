@@ -5,7 +5,7 @@
 // console and a summary table is printed when level 21 finishes.
 
 import { Bot } from './bot.js';
-import { PpoBot, hasTrainedPolicy, applyAction, actParts, loadBestRun } from './ppo.js';
+import { PpoBot, hasTrainedPolicy, applyAction, actParts, loadBestRun, startRun, fmtDist } from './ppo.js';
 
 export const LEVELS = Array.from({ length: 22 }, (_, i) => `level${String(i).padStart(2, '0')}.spe`);
 
@@ -88,6 +88,7 @@ export function stopDemo(finished = false) {
   if (!a) return;
   const g = a.game;
   g.demo = false;
+  g.hold = false;
   g.speed = 1;
   g.bot = null;
   g.demoTimeoutTicks = 0;
@@ -114,23 +115,24 @@ export function stopDemo(finished = false) {
   active = null;
 }
 
-// ---- best-run replay: plays back the PPO trainer's saved best action script ----
+// ---- best-run replay: plays back a run saved by the PPO trainer ----
+//
+// A saved run is where it started (level, and a checkpoint if it resumed from
+// one) plus the inputs it was given. Started the same way and fed the same
+// inputs, the game plays out identically, across level changes too.
 
 class ReplayBot {
-  constructor(acts) { this.acts = acts; this.i = 0; this.faceDir = 1; this.ended = false; }
+  constructor(rec) { this.acts = rec.acts; this.steps = Math.min(rec.steps ?? rec.acts.length * 4, rec.acts.length * 4); this.i = 0; this.faceDir = 1; this.ended = false; }
   step(g) {
     if (!g.level || this.ended) return;
-    if (g.player.dead) { this.ended = true; g.onDemoTimeout?.(); return; } // death desyncs the script
-    const k = Math.min(Math.floor(this.i / 4), this.acts.length - 1);
-    const act = this.acts[k];
-    const { move } = actParts(act);
-    if (move !== 0) this.faceDir = move;
-    applyAction(g, act, this.faceDir);
-    this.i++;
-    if (k === this.acts.length - 1 && this.i > this.acts.length * 4 + 16) {
-      this.ended = true;
-      g.onDemoTimeout?.(); // script exhausted without reaching the exit
+    if (g.player.dead || this.i >= this.steps) { this.ended = true; g.onDemoTimeout?.(); return; }
+    if (this.i % 4 === 0) {
+      this.act = this.acts[this.i / 4];
+      const { move } = actParts(this.act);
+      if (move !== 0) this.faceDir = move;
     }
+    applyAction(g, this.act, this.faceDir);
+    this.i++;
   }
 }
 
@@ -145,36 +147,44 @@ export function replayBestRun(game, btn, select, recOverride = null) {
     oldNextLevel: game.nextLevel,
     btnBaseText: btn.textContent,
   };
+  const mine = active;
+  const startIdx = rec.start?.idx ?? Math.max(0, LEVELS.indexOf(rec.level));
+  let lvl = startIdx;
   select.disabled = true;
   game.demo = true;
   game.speed = 2;
-  game.keys.clear();
-  game.mouseDown = false;
-  game.rightDown = false;
-  game.bot = new ReplayBot(rec.acts);
   game.demoTimeoutTicks = 0;
-  game.nextLevel = () => {
+  const finish = (text) => {
+    if (active !== mine) return;
+    game.hold = false;
+    stopDemo(false);
+    game.toast(text);
+    console.log(`[replay] ${text}`);
+  };
+  // exits behave as they did in the recorded run: on to a later level, or the end
+  game.nextLevel = (dest) => {
     if (game.transitioning) return;
     game.transitioning = true;
-    stopDemo(false);
-    game.toast('Replay finished — reached the exit!');
-    console.log(`[replay] reached the exit on ${rec.level}`);
+    if (dest > lvl && dest < LEVELS.length) {
+      game.hold = true;
+      game.start(LEVELS[dest]).then(() => { lvl = dest; if (active === mine) game.hold = false; }, () => finish('Replay stopped: level failed to load'));
+    } else finish('Replay finished — took the last exit of the run');
   };
-  game.onDemoTimeout = () => {
-    if (game.transitioning) return;
-    game.transitioning = true;
-    stopDemo(false);
-    game.toast('Replay finished (script ended or death)');
-  };
-  game.onDemoStop = () => stopDemo(false);
+  game.onDemoTimeout = () => finish(`Replay finished on level ${lvl}`);
+  game.onDemoStop = () => { game.hold = false; stopDemo(false); };
   game.onLevel = (name) => {
-    active?.oldOnLevel?.(name);
-    if (!active) return;
-    game.toast(`Replay (2x): ${name}`);
-    console.log(`[replay] ${name} — best-run script (dist ${rec.dist}, ${rec.acts.length} actions)`);
+    mine.oldOnLevel?.(name);
+    if (active === mine) game.toast(`Replay (2x): ${name}`);
   };
-  console.log(`[replay] best run on ${rec.level} (dist ${rec.dist}, ${rec.acts.length} actions)`);
+  console.log(`[replay] best run: started on level ${startIdx}${rec.start?.seed ? ' from a checkpoint' : ''}, reached ${rec.level} (${fmtDist(rec.dist)} from its exit), ${rec.acts.length} actions`);
   btn.textContent = 'Replay: running (Esc stops)';
   btn.classList.add('on');
-  game.start(rec.level);
+  // no steps until the run has been set up exactly as it was recorded
+  game.hold = true;
+  game.bot = null;
+  startRun(game, LEVELS[startIdx], rec.start?.seed || null).then(() => {
+    if (active !== mine) return;
+    game.bot = new ReplayBot(rec);
+    game.hold = false;
+  }, () => finish('Replay stopped: level failed to load'));
 }

@@ -71,6 +71,7 @@ export class Game {
     this.demo = false;
     this.bot = null;
     this.autoPause = false; // PPO trainer drives update() itself; only render here
+    this.hold = false;      // no simulation steps while set (scripted replays loading a level)
     this.renderThrottle = 0; // ms between renders while autoPaused (0 = every frame)
     this.demoStartTick = 0;
     this.demoTimeoutTicks = 0;
@@ -199,6 +200,23 @@ export class Game {
     this.start(`level${String(n).padStart(2, '0')}.spe`);
   }
 
+  // Puts everything that outlives a level load back to its starting value, so
+  // a run depends only on the level and the inputs it is given: the PPO
+  // trainer calls this before every episode (otherwise ammo and weapons carry
+  // over from the previous attempt) and recorded runs replay exactly.
+  freshRun() {
+    const p = this.player;
+    this.rng = 12345;
+    this.acc = 0; this.tickAcc = 0; this.tickCount = 0;
+    this.tpLatch = false;
+    p.weapon = 'MGUN'; p.ammo = { MGUN: 100 }; p.owned = new Set(['MGUN']); p.power = null;
+    p.dir = 1; p.anim = 0; p.jumpQueued = false; p.justFired = false; p.ground = false; p.state = 'stopped';
+    this.keys.clear(); this.mouseDown = false; this.rightDown = false; this.mouse = null;
+    this.respawn();
+    this.cam.x = p.x - VIEW_W / 2;
+    this.cam.y = p.y - VIEW_H / 2;
+  }
+
   respawn() {
     const p = this.player;
     let x = this.startPos.x, y = this.startPos.y;
@@ -240,8 +258,12 @@ export class Game {
       requestAnimationFrame((t) => this.frame(t));
       return;
     }
-    this.acc += dt * this.speed;
-    while (this.acc >= STEP) { this.update(STEP); this.acc -= STEP; }
+    // hold: a scripted run is waiting on a level load and must not be stepped
+    if (this.hold) this.acc = 0;
+    else {
+      this.acc += dt * this.speed;
+      while (this.acc >= STEP && !this.hold) { this.update(STEP); this.acc -= STEP; }
+    }
     this.render();
     this.updateHud();
     requestAnimationFrame((t) => this.frame(t));
@@ -932,7 +954,7 @@ export class Game {
     const sx = Math.round((x0 + x1) / 2 - this.cam.x);
     const top = Math.round(y0 - this.cam.y), h = Math.round(y1 - y0);
     if (sx < -4 || sx > VIEW_W + 4 || top > VIEW_H || top + h < 0) return;
-    const flick = this.rand(3);
+    const flick = (this.tickCount || 0) % 3; // not rand(): drawing must not disturb the simulation's random numbers
     this.r.rect(sx - 1, top, 3, h, flick ? this.colors.cyan : this.colors.white);
     this.r.rect(sx, top, 1, h, this.colors.white);
   }

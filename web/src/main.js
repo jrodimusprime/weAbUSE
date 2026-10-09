@@ -2,7 +2,7 @@ import { Game } from './game.js';
 import { WEAPON_ORDER } from './weapons.js';
 import { readPalette, T } from './spec.js';
 import { LEVELS, toggleDemo, replayBestRun } from './demo.js';
-import { PpoTrainer, hasTrainedPolicy, loadBestRun, loadBestHistory } from './ppo.js';
+import { PpoTrainer, hasTrainedPolicy, loadBestRun, loadBestHistory, fmtDist } from './ppo.js';
 
 const select = document.getElementById('level');
 for (const l of LEVELS) select.add(new Option(l, l));
@@ -29,6 +29,8 @@ const bestRunSel = document.getElementById('bestRunSel');
 let ppoTrainer = null;
 // How often training pauses to play one run of the current policy on screen.
 const showEverySel = document.getElementById('showEvery');
+const showModeSel = document.getElementById('showMode');
+showModeSel.addEventListener('change', () => { if (ppoTrainer) ppoTrainer.showMode = showModeSel.value; showModeSel.blur(); });
 showEverySel.addEventListener('change', () => { if (ppoTrainer) ppoTrainer.showEvery = +showEverySel.value; showEverySel.blur(); });
 const trainingActive = () => !!(ppoTrainer?.running || ppoTrainer?.paused);
 const demoUsesPpo = () => { demoBtn.textContent = hasTrainedPolicy() ? 'Demo: play 0-21 at 2x (PPO)' : 'Demo: play 0-21 at 2x'; };
@@ -40,7 +42,7 @@ const bestEntries = () => {
 const refreshReplayBtn = () => {
   const entries = bestEntries();
   bestRunSel.innerHTML = '';
-  for (const e of entries) bestRunSel.add(new Option(`${e.level} — dist ${e.dist} (${e.acts.length} actions)`));
+  for (const e of entries) bestRunSel.add(new Option(`reached ${e.level.replace('.spe', '')}, ${fmtDist(e.dist)} from its exit${e.start && e.start.idx !== e.levelIdx ? ` (run began on level ${e.start.idx})` : ''}`));
   bestRunSel.disabled = entries.length === 0;
   replayBtn.textContent = entries.length ? 'Replay best run' : 'Replay best run (none saved)';
 };
@@ -57,6 +59,7 @@ const startTraining = () => {
     if (!trainingActive()) ppoBtn.textContent = 'Train PPO';
   });
   ppoTrainer.showEvery = +showEverySel.value;
+  ppoTrainer.showMode = showModeSel.value;
   ppoBtn.textContent = 'Stop training';
   ppoTrainer.start();
   refreshPauseBtn();
