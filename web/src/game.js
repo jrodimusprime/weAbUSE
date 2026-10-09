@@ -532,7 +532,12 @@ export class Game {
     // Original do_damage passes push velocities to the victim's hurt function;
     // entity velocities here are px/tick, the same unit the C++ uses.
     if (pushX || pushY) { e.vx += pushX; e.vy += pushY; }
-    if (e.hp > 0 && this.rand(3) === 0) {
+    if (e.ai === 'ant_ai') {
+      // ant.lsp ant_damage: every hit makes the ant flinch (up or down at
+      // random) and flags it to dodge, which is what sends it to the ceiling
+      if (e.hp > 0) e.setState(this.rand(2) === 0 ? 'flinch_up' : 'flinch_down');
+      e.a.dodge = 1;
+    } else if (e.hp > 0 && this.rand(3) === 0) {
       if (e.def.states.has('flinch_up') && !/^(HIDDEN|TRACK|SPRAY)/.test(e.type)) e.setState('flinch_up');
     }
   }

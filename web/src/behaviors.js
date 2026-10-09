@@ -64,10 +64,22 @@ function ant(e, g) {
   const face = () => { e.dir = dx > 0 ? 1 : -1; };
   // An ant does no damage by touching the player: in the original it hurts
   // only with what it fires (ant.cpp has no contact damage at all).
-  const contact = () => {};
   const startJump = (vx, vy) => { e.vx = vx; e.vy = vy; e.setState('run_jump'); a.st = 'jump'; };
+  // ant.cpp ant_dodge: an ant that has been flagged to dodge (it was just
+  // shot, or on a 1 in 16 whim while running) does so half the time. If there
+  // is a roof within 120 pixels overhead it springs up to it and carries on
+  // from the ceiling; otherwise it leaps forward. Either way that is its turn.
+  const dodge = () => {
+    if (!a.dodge) return false;
+    a.dodge = 0;
+    if (g.rand(2) === 0) {
+      if (!g.sees(e.x, e.y, e.x, e.y - 120)) { e.vx = 0; e.vy = -17; e.setState('jump_up'); a.st = 'jumproof'; a.rise = 0; }
+      else startJump(e.dir * 20, -4);
+    }
+    return true;
+  };
   if (e.state === 'flinch_up' || e.state === 'flinch_down') {
-    if (!e.nextPicture()) e.setState('stopped');
+    if (!e.nextPicture()) e.setState(a.st === 'roofwalk' || a.st === 'ceilshoot' ? 'top_walk' : 'stopped');
     return true;
   }
 
@@ -105,12 +117,8 @@ function ant(e, g) {
       }
       break;
     case 'running': {
-      contact();
       if (g.rand(16) === 0) a.dodge = 1;
-      if (a.dodge) {
-        a.dodge = 0;
-        if (g.rand(2) === 0) { startJump(e.dir * 11, -10); break; }
-      }
+      if (dodge()) break;
       const toward = (dx > 0 && e.dir === 1) || (dx < 0 && e.dir === -1);
       if (!toward) { face(); e.setState('landing'); a.st = 'landing'; break; }
       e.nextPicture();
@@ -120,13 +128,13 @@ function ant(e, g) {
       if (g.rand(4) === 0 && Math.abs(dx) < 180 && Math.abs(dy) < 100 && g.sees(e.x + e.dir * 15, e.y - 15, p.x, p.y - 15)) {
         e.setState('fire_wait'); a.st = 'fire';
       } else if (Math.abs(dx) < 100 && Math.abs(dy) < 10 && g.rand(4) === 0) { e.setState('pounce_wait'); a.st = 'pounce'; a.t = 0; }
-      else if (Math.abs(dx) > 140) startJump(e.dir * 11, -9);
+      else if (Math.abs(dx) > 140) startJump(e.dir * 20, -4); // the ant's own jump: jump_top_speed 20, jump_yvel -4
       else {
         if (e.state !== 'running') e.setState('running');
         const m = g.moveEntity(e, e.dir * speed, 0);
         if (m.blockedX) {
           const up = g.moveEntity(e, 0, -speed);
-          if (up.up) { e.dir = -e.dir; startJump(e.dir * 11, -9); }
+          if (up.up) { e.dir = -e.dir; startJump(e.dir * 20, -4); }
           else g.moveEntity(e, e.dir * speed, 0);
         }
         const d = g.moveEntity(e, 0, 10);
@@ -135,12 +143,11 @@ function ant(e, g) {
       break;
     }
     case 'pounce':
-      contact();
+      if (dodge()) break;
       e.setState('pounce_wait');
-      if (++a.t > alienWait(g)) { g.sound('antslash', e.x, e.y); startJump(e.dir * 13, -8); }
+      if (++a.t > alienWait(g)) { g.sound('antslash', e.x, e.y); startJump(e.dir * 20, -4); }
       break;
     case 'jump': {
-      contact();
       e.vy = Math.min(e.vy + GRAVITY, 24);
       const m = g.moveEntity(e, e.vx, e.vy);
       if (m.blockedX) e.vx = 0;
@@ -149,7 +156,44 @@ function ant(e, g) {
       if (m.down) { e.vx = 0; e.vy = 0; e.setState('stopped'); a.st = 'running'; }
       break;
     }
+    // ---- on the ceiling (ant.cpp ANT_JUMP_ROOF, ANT_ROOF_WALK, ANT_CEIL_SHOOT) ----
+    case 'jumproof': {
+      // straight up at 17 a tick until the head (31 px above the feet) meets the roof
+      a.dodge = 0;
+      e.setState('jump_up');
+      let hit = false;
+      for (let i = 0; i < 17; i++) {
+        if (g.solidAt(e.x, e.y - 32)) { hit = true; break; }
+        e.y -= 1;
+      }
+      if (hit) { e.vy = 0; e.setState('top_walk'); a.st = 'roofwalk'; }
+      else if ((a.rise += 17) > 160) { e.vy = 0; a.st = 'fall'; } // no roof after all
+      break;
+    }
+    case 'roofwalk': {
+      if (e.state !== 'top_walk') e.setState('top_walk');
+      // drops on the player when right above them (1 in 8 a tick), or when shot at
+      if ((g.rand(8) === 0 && Math.abs(dx) < 10 && e.y < p.y) || a.dodge) {
+        a.dodge = 0;
+        e.vx = 0; e.vy = 0;
+        e.setState('run_jump'); a.st = 'jump';
+        break;
+      }
+      if ((dx < 0 && e.dir > 0) || (dx > 0 && e.dir < 0)) e.dir = -e.dir; // turn to face the player
+      else if (Math.abs(dx) < 120 && g.rand(4) === 0) { e.setState('ceil_fire'); a.st = 'ceilshoot'; }
+      else {
+        // walk on while there is clear space at head height and roof above it
+        const nx = e.x + e.dir * speed;
+        if (g.sees(e.x, e.y - 31, nx, e.y - 31) && !g.solidAt(nx, e.y - 31) && g.solidAt(nx, e.y - 32)) { e.x = nx; e.nextPicture(); }
+        else a.st = 'fall';
+      }
+      break;
+    }
+    case 'ceilshoot':
+      if (!e.nextPicture()) { antSpit(e, g); e.setState('top_walk'); a.st = 'roofwalk'; }
+      break;
     case 'fire':
+      if (dodge()) break;
       if (e.state === 'fire_wait') {
         if (!e.nextPicture()) { antSpit(e, g); if (e.state !== 'weapon_fire') e.setState('stopped'); a.st = 'running'; }
       }
