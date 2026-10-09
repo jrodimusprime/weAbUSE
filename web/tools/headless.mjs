@@ -15,6 +15,8 @@ Object.defineProperty(globalThis, 'localStorage', {
     getItem: (k) => store.get(k) ?? null,
     setItem: (k, v) => { store.set(k, String(v)); },
     removeItem: (k) => { store.delete(k); },
+    key: (i) => [...store.keys()][i] ?? null,
+    get length() { return store.size; },
   },
 });
 // the game fetches its data relative to the source files: read them from disk
@@ -24,6 +26,7 @@ globalThis.fetch = async (url) => {
     return {
       ok: true,
       text: async () => buf.toString('latin1'),
+      json: async () => JSON.parse(buf.toString('utf8')),
       arrayBuffer: async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength),
     };
   } catch {

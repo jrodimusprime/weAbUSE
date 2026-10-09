@@ -54,21 +54,16 @@
     <div id="bar">
       <label>Level <select id="level"></select></label>
       <button id="god" type="button">God mode: off</button>
-      <button id="demo" type="button">Demo: play 0-21 at 2x</button>
       <button id="ppo" type="button">Train PPO</button>
       <button id="pause" type="button" disabled>Pause</button>
-      <label>Show <select id="showMode">
-        <option value="last" selected>latest attempt</option><option value="best">best-effort run</option>
-      </select></label>
-      <label>every <select id="showEvery">
+      <label>Show the latest attempt every <select id="showEvery">
         <option value="10">10</option><option value="25">25</option><option value="50" selected>50</option>
         <option value="100">100</option><option value="0">never</option>
       </select> updates</label>
+      <button id="fullGame" type="button">Full game demo</button>
       <button id="loadTrain" type="button">Load training file</button>
       <input id="loadTrainFile" type="file" accept=".json,application/json" hidden>
-      <select id="bestRunSel"></select>
-      <button id="bestRun" type="button">Replay best run</button>
-      <button id="fullGame" type="button">Full game demo</button>
+      <button id="forget" type="button">Forget training</button>
       <span id="hud"></span>
       <span id="ppoStatus"></span>
     </div>

@@ -11,18 +11,39 @@
 // on the current level (the places runs may start from), the best run there,
 // and the exploration counts.
 //
-// Results go to <out>/ppo.json — load it in the page with "Load training
-// file" to watch the best run and use the trained policy — and <out>/report.txt.
-// Training resumes from <out>/ppo.json if it is there (--fresh starts over).
+// Results:
+//   web/data/ppo-demo.json  the recorded playthrough (every level passed, then
+//                           the best progress on the current one). The page's
+//                           "Full game demo" button plays it; commit it to
+//                           publish the demo with the site.
+//   <out>/ppo.json          everything needed to carry on training: resumed
+//                           from automatically (--fresh starts over), or loaded
+//                           into the page with "Load training file".
+//   <out>/report.txt        how far it got and where its runs end.
+//
+//   node web/tools/train.mjs --export    rewrites web/data/ppo-demo.json from
+//                                        <out>/ppo.json without training.
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { availableParallelism } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { makeGame, LEVELS } from './headless.mjs';
 
 const ppo = await import('../src/ppo.js');
 const { PPO_KEY, BEST_KEY, HIST_KEY, VISITS_KEY, CAMPAIGN_KEY, STATIONS_KEY } = ppo;
 const levelOfRec = (rec) => (rec ? (rec.levelIdx ?? LEVELS.indexOf(rec.level)) : -1);
+const DEMO_FILE = fileURLToPath(new URL('../data/ppo-demo.json', import.meta.url));
+
+// The demo recording, from a saved store (the campaign plus the best run on the current level).
+async function writeDemo(store) {
+  const campaign = store[CAMPAIGN_KEY] ? JSON.parse(store[CAMPAIGN_KEY]) : { frontier: 0, entry: null, legs: [] };
+  const rec = store[BEST_KEY] ? JSON.parse(store[BEST_KEY]) : null;
+  const demo = ppo.demoFile(campaign, rec);
+  if (!demo.pieces.length) return null; // nothing recorded yet: leave any existing demo alone
+  await writeFile(DEMO_FILE, JSON.stringify(demo));
+  return demo;
+}
 
 if (isMainThread) await main(); else await worker();
 
@@ -94,6 +115,11 @@ async function main() {
   const fresh = process.argv.includes('--fresh');
   await mkdir(outDir, { recursive: true });
   const outFile = path.join(outDir, 'ppo.json');
+  if (process.argv.includes('--export')) {
+    const demo = await writeDemo(JSON.parse(await readFile(outFile, 'utf8')).store);
+    console.log(demo ? `wrote ${DEMO_FILE}: levels passed ${demo.passed.join(', ') || 'none'}, now on level ${demo.frontier}, ${demo.pieces.length} piece(s)` : 'nothing recorded in that training file');
+    return;
+  }
 
   // resume
   let seedStore = {};
@@ -123,6 +149,7 @@ async function main() {
     net.save();
     const store = { [PPO_KEY]: localStorage.getItem(PPO_KEY), [BEST_KEY]: best, [HIST_KEY]: JSON.stringify(hist), [VISITS_KEY]: JSON.stringify([...visits]), [CAMPAIGN_KEY]: campaign, [STATIONS_KEY]: JSON.stringify({ levelIdx: frontier(), list: stations }) };
     await writeFile(outFile, JSON.stringify({ format: 'abuse-ppo-train-1', savedAt: new Date().toISOString(), store }));
+    await writeDemo(store);
     await writeFile(path.join(outDir, 'report.txt'), report());
   };
 
@@ -233,7 +260,7 @@ async function main() {
   for (const w of workers) w.postMessage({ type: 'stop' });
   await save();
   console.log('\n' + report());
-  console.log(`saved ${outFile} — load it in the page with "Load training file"`);
+  console.log(`saved ${outFile} (resume from it, or "Load training file" in the page)\nsaved ${DEMO_FILE} (what "Full game demo" plays: commit it to publish)`);
   for (const w of workers) await w.terminate();
   process.exit(process.exitCode || 0);
 }

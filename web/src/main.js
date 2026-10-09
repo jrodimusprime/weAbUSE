@@ -1,80 +1,48 @@
 import { Game } from './game.js';
 import { WEAPON_ORDER } from './weapons.js';
 import { readPalette, T } from './spec.js';
-import { LEVELS, toggleDemo, replayBestRun, replayCampaign } from './demo.js';
-import { PpoTrainer, hasTrainedPolicy, loadBestRun, loadBestHistory, fmtDist, loadCampaign, saveCampaign, saveStations, CAMPAIGN_KEY, STATIONS_KEY } from './ppo.js';
+import { LEVELS, toggleFullGameDemo, loadDemoFile, stopDemo } from './demo.js';
+import { PpoTrainer, loadCampaign, saveCampaign, saveStations, forgetTraining, CAMPAIGN_KEY, STATIONS_KEY } from './ppo.js';
 
 const select = document.getElementById('level');
 for (const l of LEVELS) select.add(new Option(l, l));
 
 const godBtn = document.getElementById('god');
-const demoBtn = document.getElementById('demo');
 const game = new Game(document.getElementById('c'), document.getElementById('hud'));
 window.game = game;
 
-// Demo sweep: autopilot playthrough of every level at 2x, starting at level 0.
-// Uses the trained PPO policy when one exists (the saved best checkpoint).
-const startDemo = () => {
-  if (trainingActive()) ppoTrainer.stop();
-  toggleDemo(game, demoBtn, select);
-};
-demoBtn.addEventListener('click', () => { startDemo(); demoBtn.blur(); });
-
-// PPO trainer: trains a policy in-page; the demo uses it once saved.
+// PPO trainer: trains a policy in the page. Training runs unseen; every so
+// many policy updates the latest attempt is replayed, then training carries on.
 const ppoBtn = document.getElementById('ppo');
 const ppoStatus = document.getElementById('ppoStatus');
 const pauseBtn = document.getElementById('pause');
-const replayBtn = document.getElementById('bestRun');
 const fullGameBtn = document.getElementById('fullGame');
-const bestRunSel = document.getElementById('bestRunSel');
-let ppoTrainer = null;
-// How often training pauses to play one run of the current policy on screen.
+const forgetBtn = document.getElementById('forget');
 const showEverySel = document.getElementById('showEvery');
-const showModeSel = document.getElementById('showMode');
-showModeSel.addEventListener('change', () => { if (ppoTrainer) ppoTrainer.showMode = showModeSel.value; showModeSel.blur(); });
+let ppoTrainer = null;
 showEverySel.addEventListener('change', () => { if (ppoTrainer) ppoTrainer.showEvery = +showEverySel.value; showEverySel.blur(); });
 const trainingActive = () => !!(ppoTrainer?.running || ppoTrainer?.paused);
-const demoUsesPpo = () => { demoBtn.textContent = hasTrainedPolicy() ? 'Demo: play 0-21 at 2x (PPO)' : 'Demo: play 0-21 at 2x'; };
-const bestEntries = () => {
-  const rec = loadBestRun();
-  const hist = loadBestHistory().filter((h) => !(rec && h.level === rec.level && h.dist === rec.dist));
-  return rec ? [rec, ...hist] : hist;
-};
-const refreshReplayBtn = () => {
-  const entries = bestEntries();
-  bestRunSel.innerHTML = '';
-  for (const e of entries) bestRunSel.add(new Option(`${e.level.replace('.spe', '')}: ${fmtDist(e.dist)} from its exit`));
-  const camp = loadCampaign();
-  fullGameBtn.textContent = camp.legs.length
-    ? `Full game demo (${camp.legs.length} level${camp.legs.length > 1 ? 's' : ''} passed, now on ${camp.frontier})`
-    : 'Full game demo (no level passed yet)';
-  bestRunSel.disabled = entries.length === 0;
-  replayBtn.textContent = entries.length ? 'Replay best run' : 'Replay best run (none saved)';
-};
+const stopTraining = () => { if (trainingActive()) ppoTrainer.stop(); ppoBtn.textContent = 'Train PPO'; refreshPauseBtn(); };
 const refreshPauseBtn = () => {
   pauseBtn.disabled = !trainingActive();
   pauseBtn.textContent = ppoTrainer?.paused ? 'Resume' : 'Pause';
 };
 const startTraining = () => {
+  stopDemo();
   ppoTrainer = new PpoTrainer(game, LEVELS, (s) => {
     ppoStatus.textContent = s;
-    demoUsesPpo();
-    refreshReplayBtn();
     refreshPauseBtn();
     if (!trainingActive()) ppoBtn.textContent = 'Train PPO';
   });
   ppoTrainer.showEvery = +showEverySel.value;
-  ppoTrainer.showMode = showModeSel.value;
   ppoBtn.textContent = 'Stop training';
   ppoTrainer.start();
   refreshPauseBtn();
 };
-demoUsesPpo();
-refreshReplayBtn();
 refreshPauseBtn();
 ppoBtn.addEventListener('click', () => {
-  if (trainingActive()) { ppoTrainer.stop(); ppoBtn.textContent = 'Train PPO'; demoUsesPpo(); refreshPauseBtn(); return; }
-  startTraining();
+  if (trainingActive()) stopTraining(); else startTraining();
+  ppoBtn.blur();
 });
 pauseBtn.addEventListener('click', () => {
   if (!trainingActive()) return;
@@ -82,17 +50,42 @@ pauseBtn.addEventListener('click', () => {
   else ppoTrainer.pause();
   refreshPauseBtn();
 });
-// The whole recorded playthrough: every level passed so far, then the best
-// progress on the current one.
-fullGameBtn.addEventListener('click', () => {
-  if (trainingActive()) { ppoTrainer.stop(); ppoBtn.textContent = 'Train PPO'; demoUsesPpo(); refreshPauseBtn(); }
-  replayCampaign(game, fullGameBtn, select);
+
+// Full game demo: the playthrough recorded by training, every level passed so
+// far and then the best progress on the current one. It plays the recording
+// committed with the site (data/ppo-demo.json, written by tools/train.mjs);
+// without one, whatever this browser has trained itself.
+const describeDemo = async () => {
+  const file = await loadDemoFile();
+  const passed = file ? file.passed.length : loadCampaign().legs.length;
+  const on = file ? file.frontier : loadCampaign().frontier;
+  if (!fullGameBtn.classList.contains('on')) fullGameBtn.textContent = `Full game demo (${passed} level${passed === 1 ? '' : 's'} passed, now on level ${on})`;
+};
+describeDemo();
+fullGameBtn.addEventListener('click', async () => {
+  stopTraining();
   fullGameBtn.blur();
+  await toggleFullGameDemo(game, fullGameBtn, select);
+});
+
+// Forget training: wipes what this browser has learned and recorded, so the
+// next "Train PPO" starts from nothing, on level 0. The committed demo
+// recording is a file in the repository and is not touched.
+forgetBtn.addEventListener('click', () => {
+  forgetBtn.blur();
+  if (!confirm('Forget all PPO training stored in this browser (policy, levels passed, save stations, exploration)?')) return;
+  stopTraining();
+  stopDemo();
+  ppoTrainer = null;
+  forgetTraining();
+  ppoStatus.textContent = 'training forgotten — the next run starts from scratch on level 0';
+  describeDemo();
 });
 
 // Results of headless training (node web/tools/train.mjs writes train-out/ppo.json):
-// the trained policy, its best runs and exploration counts. Loading one replaces
-// what this browser has stored, so its best run can be replayed here.
+// the trained policy, the levels passed, save stations and exploration counts.
+// Loading one replaces what this browser has stored, so training can carry on
+// here from where the headless run left off.
 const loadTrainBtn = document.getElementById('loadTrain');
 const loadTrainFile = document.getElementById('loadTrainFile');
 loadTrainBtn.addEventListener('click', () => { loadTrainFile.click(); loadTrainBtn.blur(); });
@@ -103,33 +96,20 @@ loadTrainFile.addEventListener('change', async () => {
   try {
     const data = JSON.parse(await file.text());
     if (data.format !== 'abuse-ppo-train-1' || !data.store) throw new Error('not a training file');
-    if (trainingActive()) { ppoTrainer.stop(); ppoBtn.textContent = 'Train PPO'; }
+    stopTraining();
+    forgetTraining();
     for (const [key, value] of Object.entries(data.store)) {
-      if (!key.startsWith('abuse.ppo.')) continue;
-      // the campaign can be too big for browser storage: it is then kept for this session only
-      if (key === CAMPAIGN_KEY) { if (value) saveCampaign(JSON.parse(value)); continue; }
-      if (key === STATIONS_KEY) { if (value) { const st = JSON.parse(value); saveStations(st.levelIdx, st.list); } continue; }
-      try { if (value == null) localStorage.removeItem(key); else localStorage.setItem(key, value); } catch { /* over quota: skip */ }
+      if (!key.startsWith('abuse.ppo.') || value == null) continue;
+      // these can be too big for browser storage: they are then kept for this session only
+      if (key === CAMPAIGN_KEY) { saveCampaign(JSON.parse(value)); continue; }
+      if (key === STATIONS_KEY) { const st = JSON.parse(value); saveStations(st.levelIdx, st.list); continue; }
+      try { localStorage.setItem(key, value); } catch { /* over quota: skip */ }
     }
-    demoUsesPpo(); refreshReplayBtn(); refreshPauseBtn();
     ppoStatus.textContent = `loaded training file (saved ${data.savedAt || 'unknown'})`;
+    describeDemo();
   } catch (err) {
     ppoStatus.textContent = `could not load training file: ${err.message}`;
   }
-});
-
-replayBtn.addEventListener('click', () => {
-  if (trainingActive()) {
-    ppoTrainer.stop();
-    ppoBtn.textContent = 'Train PPO';
-    demoUsesPpo();
-    refreshPauseBtn();
-  }
-  const entries = bestEntries();
-  const rec = entries[bestRunSel.selectedIndex] || entries[0];
-  if (!rec) { game.toast('No saved runs — train first'); return; }
-  replayBestRun(game, replayBtn, select, rec);
-  replayBtn.blur();
 });
 
 // On mobile, tapping the canvas acts as the mouse (aim + fire) and the buttons

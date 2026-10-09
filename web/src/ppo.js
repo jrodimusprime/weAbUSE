@@ -28,11 +28,6 @@ const ACTS = 24;            // move(-1..1) x jump x down x fire
 const ROLLOUT = 1024;       // decisions collected per policy update
 const BATCH = 32;           // samples per Adam step
 const EPOCHS = 2;           // passes over each rollout
-// Training stops while a walkthrough plays (there is one game instance), so
-// they are kept short: a hopeless run ends after ~2 s of real time.
-const SHOW_SPEED = 5;       // walkthroughs play at 5x real time
-const SHOW_MAX = 15 * 60;   // ...for at most 60 game-seconds (in 15 Hz ticks)
-const SHOW_STALL = 15 * 8;  // ...and end after 8 game-seconds without getting anywhere new
 const REPLAY_SPEED = 6;     // recorded attempts are replayed at 6x real time
 const REPLAY_TAIL = 60 * 45;   // the last 45 game-seconds of a failed attempt are shown (60 Hz steps)
 const REPLAY_WIN = 60 * 150;   // ...and up to the last 150 game-seconds of one that reached the exit
@@ -980,7 +975,17 @@ export function loadCampaign() {
   return bigLoad(CAMPAIGN_KEY, (c) => !!c && Array.isArray(c.legs)) || { frontier: 0, entry: null, legs: [] };
 }
 export function saveCampaign(c) { bigSave(CAMPAIGN_KEY, c); }
-export function clearCampaign() { for (const k of [CAMPAIGN_KEY, STATIONS_KEY, BEST_KEY, HIST_KEY]) bigClear(k); }
+// Forgets all training in this browser: the policy, the levels passed, save
+// stations, best runs and exploration counts (every abuse.ppo.* key, whatever
+// its version).
+export function forgetTraining() {
+  big.clear();
+  try {
+    const keys = [];
+    for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k && k.startsWith('abuse.ppo.')) keys.push(k); }
+    for (const k of keys) localStorage.removeItem(k);
+  } catch { /* storage unavailable */ }
+}
 
 // Save stations the agent has used on the current level. A run may start from
 // any of them (or from the level's start) and from nowhere else: they are the
@@ -992,6 +997,17 @@ export function loadStations(levelIdx) {
   return s && s.levelIdx === levelIdx ? s.list : [];
 }
 export function saveStations(levelIdx, list) { bigSave(STATIONS_KEY, { levelIdx, list }); }
+
+// The recorded playthrough as a standalone file (web/data/ppo-demo.json): what
+// "Full game demo" plays. Written by the headless trainer so the result of
+// local training can be committed and shown by the page, wherever it runs.
+export const DEMO_FORMAT = 'abuse-ppo-demo-1';
+export function demoFile(campaign, rec) {
+  const pieces = [];
+  for (const leg of campaign.legs) for (const piece of leg.pieces) pieces.push({ ...piece, levelIdx: leg.level });
+  if (rec && rec.levelIdx === campaign.frontier) for (const piece of rec.pieces) pieces.push({ ...piece, levelIdx: rec.levelIdx });
+  return { format: DEMO_FORMAT, savedAt: new Date().toISOString(), passed: campaign.legs.map((l) => l.level), frontier: campaign.frontier, pieces };
+}
 
 // Everything recorded so far as one playthrough: the passed levels in order,
 // then the best progress on the current one. Each item is a piece plus the
@@ -1292,22 +1308,16 @@ export class PpoTrainer {
     // how many runs have reached each 40 px cell of each level ("level:cell")
     this.visits = new Map();
     try { this.visits = new Map(JSON.parse(localStorage.getItem(VISITS_KEY) || '[]')); } catch { /* start empty */ }
-    // Walkthroughs: training runs unseen; after every `showEvery` policy
-    // updates the current policy plays one run from spawn on screen, picking
-    // its best action each time (no exploration noise).
+    // Training runs unseen. After every `showEvery` policy updates the latest
+    // attempt is replayed on screen (a run that passed the level is shown
+    // once, when it happens), then training carries on.
     this.showEvery = 50;
-    // What is shown: 'last' = a replay of a recorded training attempt: the most
-    // recent one that reached the exit if there has been one, otherwise the
-    // most recent attempt, exploration noise and all; 'best' = a separate
-    // walkthrough of the policy's best actions.
-    this.showMode = 'last';
     this.lastAttempt = null;  // { startIdx, seed, acts, steps, end, endIdx, cleared, how } of the latest finished episode
-    this.winRun = null;       // the attempt that got through the most levels (latest among equals)
+    this.winRun = null;       // a run that passed the level, until it has been shown
     this.replay = null;       // the replay in progress
-    this.epSeedState = null;  // checkpoint this episode started from (null = spawn)
-    this.show = null;         // the walkthrough in progress
+    this.epSeedState = null;  // state this episode started from (null = the level's own start)
     this.showDue = false;
-    this.lastShow = '';       // result of the last walkthrough, for the status line
+    this.lastShow = '';       // what was shown last, for the status line
     // next_level zones carry their destination level in aistate (original
     // people.lsp): only the zone loading THIS level's successor is a win.
     // An exit to a later level (the next one, or a secret exit that skips
@@ -1336,7 +1346,7 @@ export class PpoTrainer {
     this.origCheckpoint = g.setCheckpoint;
     g.setCheckpoint = (x, y) => {
       this.origCheckpoint.call(g, x, y);
-      if (!this.replay && !this.show && !this.resetting) this.stationHit = `${x},${y}`;
+      if (!this.replay && !this.resetting) this.stationHit = `${x},${y}`;
     };
     g.onDemoStop = () => this.stop();
     console.log(`[ppo] training started (${this.loaded ? 'resumed' : 'fresh'})`);
@@ -1417,70 +1427,12 @@ export class PpoTrainer {
     this.reset();
   }
 
-  // ---- walkthroughs ----
-
-  async beginShow() {
-    const g = this.g;
-    this.showDue = false;
-    this.resetting = true;
-    this.lastObs = null;
-    const camp = loadCampaign();
-    const F = this.levelIdx = Math.min(camp.frontier, this.levels.length - 1); // walkthroughs play the current level
-    try { await startRun(g, this.levels[F], camp.entry || null); } catch { /* shown next time */ }
-    if (!this.running && !this.paused) return; // stopped while the level loaded
-    g.bot = this.bot;
-    g.nextLevel = (dest) => this.endShow(dest > F ? `reached the exit to level ${dest}` : 'took an exit leading back');
-    g.renderThrottle = 0; // draw every frame
-    const d = exitDist(g, F + 1);
-    this.show = { n: 0, acc: 0, startDist: d, bestDist: d, sig: null, lastNew: 0 };
-    this.resetting = false;
-    this.onStatus(`walkthrough after update ${this.updates}…`);
-  }
-
-  // One 60 Hz game step of the walkthrough; the policy's best action is
-  // re-chosen every 4th step, as in training.
-  showStep() {
-    const g = this.g, p = g.player, sh = this.show;
-    if (p.dead) { this.endShow('died'); return; }
-    if (sh.n % 4 === 0) {
-      const dist = exitDist(g, this.levelIdx + 1);
-      if (dist < sh.bestDist) sh.bestDist = dist;
-      const { logits } = this.net.forward(buildObs(g, dist));
-      let act = 0;
-      for (let i = 1; i < ACTS; i++) if (logits[i] > logits[act]) act = i;
-      const { move } = actParts(act);
-      if (move !== 0) this.bot.faceDir = move;
-      this.bot.act = act;
-      const sig = Math.floor(p.x / 40) * 1000 + Math.floor(p.y / 40);
-      if (sig !== sh.sig) { sh.sig = sig; sh.lastNew = sh.n; }
-    }
-    sh.n++;
-    g.update(1 / 60);
-    if (!this.show) return; // reached an exit during the update
-    if (sh.n - sh.lastNew > SHOW_STALL * 4) this.endShow('got stuck');
-    else if (sh.n > SHOW_MAX * 4) this.endShow('ran out of time');
-  }
-
-  endShow(how) {
-    const sh = this.show;
-    if (!sh) return;
-    this.show = null;
-    const g = this.g;
-    g.renderThrottle = HIDDEN; // hold this last frame while training continues
-    const fmt = fmtDist;
-    this.lastShow = `last walkthrough (update ${this.updates}): ${how} after ${Math.round(sh.n / 60)}s, distance to exit ${fmt(sh.startDist)} → ${fmt(sh.bestDist)}`;
-    console.log(`[ppo] ${this.lastShow}`);
-    this.onStatus(this.lastShow);
-    this.reset();
-  }
-
   stop() {
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
     if (!this.running && !this.paused) return;
     this.running = false;
     this.paused = false;
     this.updating = null; // drop any partially-applied gradient rollout
-    this.show = null;     // and any walkthrough
     this.replay = null;
     this.showDue = false;
     this.g.renderThrottle = 0;
@@ -1660,7 +1612,6 @@ export class PpoTrainer {
   // attempt is ever cut short for it), otherwise start the next episode.
   nextEpisode() {
     if (this.showDue && this.running) {
-      if (this.showMode === 'best') { this.beginShow(); return; }
       // A new furthest run is shown once, when it happens; every other look
       // is the attempt that has just finished, so no two looks are the same.
       const att = this.winRun && !this.winRun.shown ? this.winRun : this.lastAttempt;
@@ -1716,11 +1667,7 @@ export class PpoTrainer {
     const gap = this.lastFrameAt ? now - this.lastFrameAt : 0;
     this.lastFrameAt = now;
     try {
-      if (this.show) {
-        // play the walkthrough at SHOW_SPEED x real time
-        this.show.acc += Math.min(gap, 100) / (1000 / 60) * SHOW_SPEED;
-        while (this.show && this.show.acc >= 1) { this.show.acc--; this.showStep(); }
-      } else if (this.replay) {
+      if (this.replay) {
         if (!this.resetting && !this.replay.loading) {
           this.replay.acc += Math.min(gap, 100) / (1000 / 60) * REPLAY_SPEED;
           while (this.replay && !this.replay.loading && this.replay.acc >= 1) { this.replay.acc--; if (!this.replayStep()) this.endReplay(); }
@@ -1744,12 +1691,9 @@ export class PpoTrainer {
         this.statusAt = now;
         if (this.replay) {
           if (!this.resetting && !this.replay.loading) this.onStatus(`${this.replayLabel()} · ${Math.floor(this.replay.n / 60)}s of ${Math.floor(this.replay.total / 60)}s`);
-        } else if (this.show) {
-          this.onStatus(`walkthrough after update ${this.updates} · ${Math.floor(this.show.n / 60)}s · distance to exit ${fmtDist(this.show.bestDist)}`);
         }
         else {
-          const what = this.showMode === 'best' ? 'walkthrough' : 'replay';
-          const next = this.showEvery <= 0 ? '' : this.showDue ? ` · ${what} when this attempt ends` : ` · next ${what} in ${this.showEvery - (this.updates % this.showEvery)} updates`;
+          const next = this.showEvery <= 0 ? '' : this.showDue ? ' · replay when this attempt ends' : ` · next replay in ${this.showEvery - (this.updates % this.showEvery)} updates`;
           this.onStatus(`training (not shown) · run ${this.episodes + 1} on level ${this.levelIdx} · ${loadCampaign().legs.length} levels passed · upd ${this.updates}${next}${this.lastShow ? ` · ${this.lastShow}` : ''}`);
         }
       }
