@@ -50,6 +50,9 @@ export class Game {
     this.mouse = null;
     this.mouseDown = false;
     this.god = false;
+    // hardness.lsp ships with (setf difficulty 'easy): damage to the player is
+    // halved, and enemies are slower to act.
+    this.difficulty = 'easy';
     this.lightMap = new LightMap();
     this.lightsOn = true;
     this.ambient = 32;
@@ -174,7 +177,7 @@ export class Game {
       const e = new Entity(def, o);
       e.id = i; // stable identity (place in the level file) for PPO checkpoints
       e.lv = o.lv || {};
-      e.shootable = def.flags.get('hurtable') === 'T' || /BOMB$/.test(o.type);
+      e.shootable = def.flags.get('hurtable') === 'T';
       e.logic = LOGIC_AI.has(e.ai);
       e.fade = o.fade || 0;
       e.lights = o.lights.map((i) => level.lights[i]);
@@ -517,7 +520,10 @@ export class Game {
   }
 
   damage(e, amount, pushX = 0, pushY = 0) {
-    if (/BOMB$/.test(e.type)) { e.a.hit = true; return; }
+    // doors.lsp hwall_damage: a hidden wall that is wired to something takes
+    // no damage until that something is on (and then it blows by itself). Only
+    // unwired walls can be shot down.
+    if ((e.ai === 'hwall_ai' || e.ai === 'big_wall_ai') && e.links.length && e.links[0].aistate === 0) return;
     if (e.type === 'SWITCH_BALL') {
       if (e.state === 'stopped') { e.aistate = 1; e.setState('running'); this.sound('switch', e.x, e.y); }
       return;
@@ -553,9 +559,13 @@ export class Game {
     }
   }
 
+  // people.lsp bottom_damage: every hit on the player is scaled by the
+  // difficulty, in whole numbers, before it counts.
   hurtPlayer(amount) {
     const p = this.player;
     if (p.dead) return;
+    const d = this.difficulty;
+    amount = d === 'easy' ? Math.trunc(amount / 2) : d === 'medium' ? Math.trunc((amount * 3) / 4) : d === 'extreme' ? amount * 3 : amount;
     p.hp -= amount;
     if (p.hp > 0) return;
     if (this.god) { this.countGodDeath(); p.hp = p.maxhp; return; }

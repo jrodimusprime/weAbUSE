@@ -108,6 +108,39 @@ export function firePlayer(g) {
   }
 }
 
+// guns.lsp fire_object, for everything that is not the player: gun turrets,
+// ants and flyers all shoot through this, and what comes out is decided by the
+// shooter's aitype, set per object in the level:
+//   0 fast bullet (speed 15, 6 ticks)      3 rocket (homes in, to speed 10)
+//   1 slow bullet (speed 6, 40 ticks)      4 plasma
+//   2 grenade                              5 fire bomb
+// Bullets do 5 damage (cop.cpp sgun_ai), plasma 10; explosives use the
+// do_explo figures from weapons.lsp. `angle` is in degrees, anticlockwise.
+export function enemyFire(g, type, x, y, angle) {
+  const a = angle * Math.PI / 180, c = Math.cos(a), s = -Math.sin(a);
+  const base = { x, y, px: x, py: y, mine: false };
+  if (type === 2 || type === 5) {
+    // set_course angle 20, then the grenade's own gravity
+    g.projs.push({ ...base, kind: 'grenade', vx: c * 20, vy: s * 20, gravity: 2, life: 40, dmg: 36, radius: 40, def: type === 5 ? 'FIREBOMB' : 'GRENADE', bounces: 0 });
+    g.sound('throw', x, y);
+  } else if (type === 3) {
+    // rocket_ai: starts at speed 5, gains 2 a tick up to 10 (14 for the
+    // player's), turns up to 23 degrees a tick towards its target
+    g.projs.push({ ...base, kind: 'rocket', vx: c * 5, vy: s * 5, life: 90, dmg: 50, radius: 40, def: 'ROCKET', smoke: 0, homing: true, speed: 5, angDeg: ((angle % 360) + 360) % 360 });
+    g.sound('rocket', x, y);
+  } else if (type === 4) {
+    g.projs.push({ ...base, kind: 'plasma', vx: c * 34, vy: s * 34, life: 20, dmg: 10 });
+    g.sound('plasma', x, y);
+  } else {
+    const slow = type === 1;
+    g.projs.push({
+      ...base, kind: 'bullet', speed: slow ? 6 : 15, angDeg: angle, vx: 0, vy: 0, life: slow ? 40 : 6, dmg: 5,
+      bright: slow ? g.colors.orange : g.colors.yellow, dark: slow ? g.colors.redBright : g.colors.yellow,
+    });
+    g.sound('enemyshot', x, y);
+  }
+}
+
 export function enemyShot(g, x, y, tx, ty, speed, dmg, kind = 'acid') {
   const dx = tx - x, dy = ty - y;
   const d = Math.hypot(dx, dy) || 1;
@@ -142,7 +175,7 @@ export function updateProjectiles(g) {
     if (bullet) {
       // C++ sgun_ai (cop.cpp): the bullet accelerates 6/5 each tick and moves
       // along a fixed angle. It dies when lifetime reaches 0, after moving.
-      b.speed = b.speed * 6 / 5;
+      b.speed = Math.trunc(b.speed * 6 / 5); // whole numbers, as the original's integer speed
       const a = b.angDeg * Math.PI / 180;
       b.vx = Math.cos(a) * b.speed;
       b.vy = -Math.sin(a) * b.speed;
@@ -151,7 +184,23 @@ export function updateProjectiles(g) {
       continue;
     }
     if (b.gravity) b.vy += b.gravity;
-    if (b.kind === 'rocket') { if (!b.straight) { b.vx *= 1.04; b.vy *= 1.04; } if (++b.smoke % 2 === 0) g.effect('SMALL_LIGHT_CLOUD', b.x, b.y); }
+    if (b.kind === 'rocket') {
+      if (b.homing) {
+        // weapons.lsp rocket_ai: steer towards the target (the player, 15 px
+        // above the feet) by up to 23 degrees a tick, not at all within 5
+        const p = g.player;
+        let want = Math.atan2(b.y - (p.y - 15), p.x - b.x) * 180 / Math.PI;
+        if (want < 0) want += 360;
+        const clock = want < b.angDeg ? b.angDeg - want : b.angDeg + (360 - want);
+        const closest = clock > 180 ? 360 - clock : clock;
+        const add = closest > 23 ? 23 : closest < 5 ? 0 : closest;
+        b.angDeg = clock > 180 ? (b.angDeg + add) % 360 : (b.angDeg - add + 360) % 360;
+        if (b.speed < 10) b.speed += 2;
+        const a = b.angDeg * Math.PI / 180;
+        b.vx = Math.cos(a) * b.speed; b.vy = -Math.sin(a) * b.speed;
+      } else if (!b.straight) { b.vx *= 1.04; b.vy *= 1.04; }
+      if (++b.smoke % 2 === 0) g.effect('SMALL_LIGHT_CLOUD', b.x, b.y);
+    }
     const steps = Math.max(1, Math.ceil(Math.hypot(b.vx, b.vy) / 3));
     for (let i = 0; i < steps && !b.dead; i++) {
       const nx = b.x + b.vx / steps, ny = b.y + b.vy / steps;
@@ -174,6 +223,9 @@ export function updateProjectiles(g) {
         // deals 5 damage with a push along the bullet's direction.
         if (hit.tile) {
           g.effect('EXPLODE5', b.x + g.rand(4), b.y + g.rand(4));
+        } else if (hit.player) {
+          g.effect('EXPLODE3', b.x + g.rand(4), b.y + g.rand(4));
+          g.hurtPlayer(b.dmg);
         } else {
           g.effect('EXPLODE3', b.x + g.rand(4), b.y + g.rand(4));
           const a = b.angDeg * Math.PI / 180;
@@ -205,11 +257,13 @@ export function drawProjectiles(g, alpha) {
       // Original sgun_draw: bright centre line with medium-red neighbours.
       const lx = Math.round(b.px - cx), ly = Math.round(b.py - cy);
       const tx = Math.round(x), ty = Math.round(y);
-      dline(r, lx, ly - 1, tx, ty - 1, col.redDark);
-      dline(r, lx, ly + 1, tx, ty + 1, col.redDark);
-      dline(r, lx - 1, ly, tx - 1, ty, col.redBright);
-      dline(r, lx + 1, ly, tx + 1, ty, col.redDark);
-      dline(r, lx, ly, tx, ty, col.redBright);
+      // the player's are red; enemy bullets carry their own colours (yellow, or orange for the slow kind)
+      const bright = b.bright ?? col.redBright, dark = b.dark ?? col.redDark;
+      dline(r, lx, ly - 1, tx, ty - 1, dark);
+      dline(r, lx, ly + 1, tx, ty + 1, dark);
+      dline(r, lx - 1, ly, tx - 1, ty, bright);
+      dline(r, lx + 1, ly, tx + 1, ty, dark);
+      dline(r, lx, ly, tx, ty, bright);
     } else if (b.kind === 'plasma' || b.kind === 'acid' || b.kind === 'spark') {
       const c1 = b.kind === 'plasma' ? col.cyan : b.kind === 'acid' ? col.green : col.orange;
       const n = 3;

@@ -1,6 +1,6 @@
 // Native JS versions of the original Lisp/C++ object AI, keyed by the def_char ai_fun name.
 // Each takes (entity, game) once per 15 Hz tick and returns false to remove the entity.
-import { pickupFor, enemyShot } from './weapons.js';
+import { pickupFor, enemyFire } from './weapons.js';
 
 export const LOGIC_AI = new Set([
   'delay_ai', 'or_ai', 'and_ai', 'xor_ai', 'not_ai', 'pulse_ai', 'sensor_ai', 'switcher_ai', 'switch_once_ai',
@@ -36,14 +36,23 @@ function killEffects(e, g, big) {
 }
 
 // ---- ants ----
+// ant.cpp fire_at_player: from the muzzle 15 px ahead and up, at where the
+// player will be (8 ticks of their sideways speed, 2 of their vertical), with
+// whatever the ant's aitype fires (see enemyFire). No shot without a clear
+// line to that point.
 function antSpit(e, g) {
   const p = g.player;
   const fx = e.x + e.dir * 15, fy = e.y - 15;
-  if (!g.sees(e.x, e.y - 15, fx, fy) || !g.sees(fx, fy, p.x, p.y - 15)) return false;
-  enemyShot(g, fx, fy, p.x + p.vx / 15 * 6, p.y - 15, 16, 7, 'acid');
+  const tx = p.x + (p.vx / 15) * 8, ty = p.y - 15 + (p.vy / 15) * 2;
+  if (!g.sees(e.x, e.y - 15, fx, fy) || !g.sees(fx, fy, tx, ty)) return false;
+  let angle = Math.atan2(fy - ty, tx - fx) * 180 / Math.PI;
+  if (angle < 0) angle += 360;
+  enemyFire(g, e.aitype, fx, fy, angle);
   e.setState('weapon_fire');
   return true;
 }
+// ant.cpp alien_wait_time: how long an ant winds up before it pounces
+const alienWait = (g) => ({ easy: 6, medium: 4, hard: 2 }[g.difficulty] ?? 1);
 
 function ant(e, g) {
   const p = g.player, a = e.a;
@@ -53,9 +62,9 @@ function ant(e, g) {
   const speed = e.def.abilities.get('run_top_speed') ?? 7;
   const { dx, dy } = nearestDist(e, p);
   const face = () => { e.dir = dx > 0 ? 1 : -1; };
-  const contact = () => {
-    if (!a.cd && g.touchesPlayer(e)) { g.hurtPlayer(e.state === 'run_jump' ? 10 : 6); a.cd = 6; }
-  };
+  // An ant does no damage by touching the player: in the original it hurts
+  // only with what it fires (ant.cpp has no contact damage at all).
+  const contact = () => {};
   const startJump = (vx, vy) => { e.vx = vx; e.vy = vy; e.setState('run_jump'); a.st = 'jump'; };
   if (e.state === 'flinch_up' || e.state === 'flinch_down') {
     if (!e.nextPicture()) e.setState('stopped');
@@ -67,7 +76,7 @@ function ant(e, g) {
     case 'hiding':
       e.hidden = true;
       e.shootable = false;
-      if (Math.abs(dx) < 130 && e.y < p.y) {
+      if (e.links.length ? link0(e).aistate !== 0 : (Math.abs(dx) < 130 && e.y < p.y)) {
         e.hidden = false;
         if (e.type === 'HIDDEN_ANT') g.changeType(e, 'ANT_ROOF');
         e.shootable = true;
@@ -77,7 +86,8 @@ function ant(e, g) {
       break;
     case 'hanging':
       e.shootable = false;
-      if (Math.abs(dx) < 130 && e.y < p.y) {
+      // a linked ant waits for its link (a sensor or switch); only an unlinked one drops when the player walks under it
+      if (e.links.length ? link0(e).aistate !== 0 : (Math.abs(dx) < 130 && e.y < p.y)) {
         e.shootable = true;
         e.setState('fall_start');
         a.st = 'fall';
@@ -96,7 +106,7 @@ function ant(e, g) {
       break;
     case 'running': {
       contact();
-      if (g.rand(20) === 0) a.dodge = 1;
+      if (g.rand(16) === 0) a.dodge = 1;
       if (a.dodge) {
         a.dodge = 0;
         if (g.rand(2) === 0) { startJump(e.dir * 11, -10); break; }
@@ -104,11 +114,13 @@ function ant(e, g) {
       const toward = (dx > 0 && e.dir === 1) || (dx < 0 && e.dir === -1);
       if (!toward) { face(); e.setState('landing'); a.st = 'landing'; break; }
       e.nextPicture();
-      // Original ant (aistate 2 -> 8): 1/5 chance to fire when facing you.
-      if (g.rand(5) === 0 && Math.abs(dx) < 180 && Math.abs(dy) < 100 && g.sees(e.x + e.dir * 15, e.y - 15, p.x, p.y - 15)) {
+      // ant.cpp ANT_RUNNING: a 1 in 4 chance each tick to shoot when the player is
+      // within 180 x 100 and in sight, else 1 in 4 to pounce when level and
+      // within 100, else a leap forward when further than 140 away.
+      if (g.rand(4) === 0 && Math.abs(dx) < 180 && Math.abs(dy) < 100 && g.sees(e.x + e.dir * 15, e.y - 15, p.x, p.y - 15)) {
         e.setState('fire_wait'); a.st = 'fire';
-      } else if (Math.abs(dx) < 100 && Math.abs(dx) > 10 && Math.abs(dy) < 10 && g.rand(5) === 0) { e.setState('pounce_wait'); a.st = 'pounce'; a.t = 0; }
-      else if (Math.abs(dx) > 140 && g.rand(3) === 0) startJump(e.dir * 11, -9);
+      } else if (Math.abs(dx) < 100 && Math.abs(dy) < 10 && g.rand(4) === 0) { e.setState('pounce_wait'); a.st = 'pounce'; a.t = 0; }
+      else if (Math.abs(dx) > 140) startJump(e.dir * 11, -9);
       else {
         if (e.state !== 'running') e.setState('running');
         const m = g.moveEntity(e, e.dir * speed, 0);
@@ -125,7 +137,7 @@ function ant(e, g) {
     case 'pounce':
       contact();
       e.setState('pounce_wait');
-      if (++a.t > 3) { g.sound('antslash', e.x, e.y); startJump(e.dir * 13, -8); }
+      if (++a.t > alienWait(g)) { g.sound('antslash', e.x, e.y); startJump(e.dir * 13, -8); }
       break;
     case 'jump': {
       contact();
@@ -231,7 +243,8 @@ function flyer(e, g) {
       const playerx = p.x + (p.vx / 15) * 4, playery = p.y - 15 + (p.vy / 15) * 2; // port velocities are px/s
       if (g.sees(e.x, e.y, firex, firey) && g.sees(firex, firey, playerx, playery)) {
         const ang = Math.atan2(firey - playery, playerx - firex);
-        g.projs.push({ kind: 'rocket', x: firex, y: firey, px: firex, py: firey, vx: Math.cos(ang) * 15, vy: -Math.sin(ang) * 15, life: 60, dmg: 15, radius: 25, mine: false, def: 'ROCKET', smoke: 0, straight: true });
+        const rs = { easy: 12, medium: 15, hard: 17 }[g.difficulty] ?? 22; // ant.lsp strait_rocket_ai: speed by difficulty
+        g.projs.push({ kind: 'rocket', x: firex, y: firey, px: firex, py: firey, vx: Math.cos(ang) * rs, vy: -Math.sin(ang) * rs, life: 60, dmg: 15, radius: 25, mine: false, def: 'ROCKET', smoke: 0, straight: true });
         g.sound('mgun', firex, firey);
         if (a.burstLeft <= 1) a.fireTime = fireDelay;
         else a.burstLeft--;
@@ -244,30 +257,106 @@ function flyer(e, g) {
   return true;
 }
 
-// ---- gun turrets ----
-function turret(e, g) {
-  const p = g.player, a = e.a;
-  if (e.hp <= 0) { killEffects(e, g, true); return false; }
-  const aimFrames = e.def.states.get('spinning') || e.def.states.get('spray.aim');
-  const n = aimFrames?.length || 24;
-  // Muzzle from the original spray_fire: (x + cos*20, y - 21 - sin*22)
-  const baseY = e.y - 21;
-  const canSee = Math.hypot(p.x - e.x, p.y - 15 - baseY) < 320 && g.sees(e.x, baseY, p.x, p.y - 15);
-  const want = Math.atan2(-(p.y - 15 - baseY), p.x - e.x);
-  if (canSee) {
-    const target = Math.round(((want + 2 * Math.PI) % (2 * Math.PI)) / (2 * Math.PI) * n) % n;
-    const diff = ((target - (a.frame ?? 0) + n * 1.5) % n) - n / 2;
-    a.frame = (((a.frame ?? 0) + Math.sign(diff) * Math.min(1, Math.abs(diff)) + n) % n);
-    a.aim = want;
-    if (a.cd > 0) a.cd--;
-    else if (Math.abs(diff) < 1.5) {
-      const dmg = e.type === 'SPRAY_GUN' ? 5 : 8;
-      enemyShot(g, e.x + Math.cos(want) * 20, baseY - Math.sin(want) * 22, p.x, p.y - 15, 18, dmg, 'spark');
-      a.cd = e.type === 'SPRAY_GUN' ? 3 : (e.lv?.fire_delay || 8);
+// ---- gun turrets (guns.lsp) ----
+// Both kinds stay folded shut and cannot be hurt until their link switches
+// them on (weapons.lsp guner_damage ignores hits on a "stopped" gun), and what
+// they fire is set by their aitype (see enemyFire).
+
+// set_frame_angle 0 359: which of the turret's frames points along `angle`
+const angleFrame = (e, state, angle) => {
+  const n = e.def.states.get(state)?.length || 24;
+  return Math.floor((((angle % 360) + 360) % 360) * n / 360) % n;
+};
+const turretDead = (e, g) => { killEffects(e, g, true); return false; };
+
+// SPRAY_GUN — spray_gun_ai. It does not aim. Once unfolded it sweeps between
+// its start and end angles in steps of angle_speed, firing one shot along the
+// barrel at every step, back and forth for as long as it is switched on and
+// the player is within 450 x 400 pixels.
+function sprayGun(e, g) {
+  const p = g.player, a = e.a, lv = e.lv || {};
+  if (e.hp <= 0) return turretDead(e, g);
+  const delay = lv['spray.fire_delay'] ?? 4, speed = lv['spray.angle_speed'] ?? 10;
+  const start = lv['spray.start_angle'] ?? 270, end = lv['spray.end_angle'] ?? 350;
+  if (!(Math.abs(p.x - e.x) < 450 && Math.abs(p.y - e.y) < 400)) { e.setState('stopped'); e.shootable = false; return true; }
+  a.t = (a.t ?? 0) + 1; // ticks in the current aistate
+  const go = (st) => { e.aistate = st; a.t = 0; };
+  const aim = () => { e.state = 'spray.aim'; e.frame = angleFrame(e, 'spray.aim', a.angle); };
+  const fire = () => {
+    const r = a.angle * Math.PI / 180;
+    enemyFire(g, e.aitype, e.x + Math.cos(r) * 20, e.y - 21 - Math.sin(r) * 22, a.angle);
+  };
+  for (let pass = 0; pass < 2; pass++) { // go_state runs the new state in the same tick
+    switch (e.aistate) {
+      case 0:
+        if (!activated(e)) { e.shootable = false; e.setState('stopped'); return true; }
+        if (e.state === 'stopped') { e.shootable = true; e.setState('spray.appear'); go(1); } else go(3);
+        continue;
+      case 1: // unfold
+        if (!e.nextPicture()) { go(3); a.angle = start; aim(); }
+        return true;
+      case 3: // swivel down to the start angle
+        if (a.t > delay) {
+          go(3);
+          a.angle = (a.angle ?? start) - speed;
+          if (a.angle <= start) { a.angle = start; go(4); }
+          aim(); fire();
+        }
+        return true;
+      case 4: // swivel up to the end angle
+        if (a.t > delay) {
+          go(4);
+          a.angle = (a.angle ?? start) + speed;
+          if (a.angle >= end) { a.angle = end; go(0); }
+          aim(); fire();
+        }
+        return true;
+      default: go(0);
     }
   }
-  e.state = aimFrames === e.def.states.get('spinning') ? 'spinning' : 'spray.aim';
-  e.frame = Math.round(a.frame ?? 0) % n;
+  return true;
+}
+
+// TRACK_GUN — track_ai. It turns towards the player by at most track_speed
+// degrees a tick, only within its start..end arc, and fires in bursts:
+// burst_total shots fire_delay ticks apart, then a pause of continue_time.
+// It fires along its barrel (give or take 2 degrees) whenever the turn it
+// just made was under 5 degrees, so a slow gun shoots where it is pointing,
+// not where the player is.
+function trackGun(e, g) {
+  const p = g.player, a = e.a, lv = e.lv || {};
+  if (e.hp <= 0) return turretDead(e, g);
+  if (!activated(e)) { e.shootable = false; e.setState('stopped'); return true; }
+  if (e.state === 'stopped') { e.shootable = true; e.setState('opening'); return true; }
+  if (e.state === 'opening' && e.nextPicture()) return true;
+  if (a.angle === undefined) {
+    a.angle = lv.angle ?? 270;
+    a.fireLeft = lv.fire_delay_left ?? 0; a.burstLeft = lv.burst_total_left ?? 0; a.contLeft = lv.continue_time_left ?? 0;
+  }
+  const trackSpeed = lv.track_speed ?? 1, fireDelay = lv.fire_delay ?? 5, burst = lv.burst_total ?? 3, cont = lv.continue_time ?? 8;
+  const lo = lv.track_start_angle ?? 180, hi = lv.track_end_angle ?? 359;
+  const show = (state) => { e.state = state; e.frame = angleFrame(e, state, a.angle); };
+  show('spinning');
+  if (a.contLeft > 0) {
+    if (--a.contLeft === 0) a.burstLeft = burst;
+    return true;
+  }
+  if (a.fireLeft > 0) { a.fireLeft--; return true; }
+  let want = Math.atan2(e.y - p.y + 8, p.x - e.x) * 180 / Math.PI;
+  if (want < 0) want += 360;
+  want = Math.floor(want);
+  const clock = want < a.angle ? a.angle - want : a.angle + (360 - want);
+  const closest = clock > 180 ? 360 - clock : clock;
+  const add = closest >= trackSpeed ? trackSpeed : closest;
+  const next = clock > 180 ? (a.angle + add) % 360 : (a.angle - add + 360) % 360;
+  if (lo > hi ? (next >= hi && next <= lo) : (next <= hi && next >= lo)) a.angle = next; // track_set_angle
+  if (add < 5) {
+    const r = a.angle * Math.PI / 180;
+    enemyFire(g, e.aitype, e.x + Math.cos(r) * 18, e.y - 15 - Math.sin(r) * 15, (a.angle + 2 - g.rand(5) + 360) % 360);
+    if (a.burstLeft === 0 || a.burstLeft === 1) a.contLeft = cont;
+    else { a.burstLeft--; a.fireLeft = fireDelay; }
+    show('firing');
+  }
   return true;
 }
 
@@ -290,9 +379,18 @@ const items = {
     if (g.touchesPlayer(e)) { g.player.hp = g.player.maxhp; g.sound('health'); return false; }
     return true;
   },
+  // duong.lsp lava_ai: 6 damage every 20 ticks to a player standing in it,
+  // and now and then (1 tick in 100) it spits: a 20-pixel burst doing up to 20.
   lava_ai(e, g) {
     e.nextPicture();
-    if (g.touchesPlayer(e) && e.stateTime % 20 === 0) g.hurtPlayer(6);
+    e.a.t = (e.a.t ?? 0) + 1;
+    if (g.touchesPlayer(e) && e.a.t % 20 === 0) g.hurtPlayer(6);
+    if (e.aistate === 0) { if (g.rand(100) === 0) { e.aistate = 1; e.a.spit = 0; } }
+    else if (++e.a.spit === 5) {
+      const p = g.player, d = Math.hypot(p.x - e.x, p.y - e.y);
+      if (d < 20) g.hurtPlayer(20 - d);
+      e.aistate = 0;
+    }
     return true;
   },
   spring_ai(e, g) {
@@ -312,15 +410,18 @@ const items = {
 };
 
 // ---- explosives ----
+// BOMB / BIG_BOMB — duong.lsp bomb_ai. Set off only by its link (or at once
+// if it has none): it cannot be shot. It ticks down blink_time, then blows
+// with do_explo 40 <jump_yvel>: a 40-pixel blast doing 30, or 400 for the big
+// one.
 function bomb(e, g) {
-  const big = e.type === 'BIG_BOMB';
   if (e.aistate === 0) {
-    if (e.a.hit || activated(e, g)) { goState(e, 1); e.lv ??= {}; e.a.blink = e.a.hit ? 3 : (e.lv.blink_time ?? 14); }
+    if (activated(e)) { goState(e, 1); e.a.blink = e.lv?.blink_time ?? 14; }
     return true;
   }
   const t = e.a.blink;
   if (t < 1) {
-    g.explode(e.x, e.y - 8, big ? 100 : 55, big ? 80 : 45, false);
+    g.explode(e.x, e.y - 8, 40, e.def.abilities.get('jump_yvel') ?? 30, false);
     g.sound('explode', e.x, e.y);
     return false;
   }
@@ -328,19 +429,24 @@ function bomb(e, g) {
   e.a.blink--;
   return true;
 }
-
+// CONC (floor mine) and CONC_AIR (floating mine) — duong.lsp mine_ai /
+// air_mine_ai. Live only while their link is on (always, if unlinked), and
+// set off by the player touching them: a 40-pixel blast doing 25 (35 for the
+// floor mine with its flash flag set). The floor mine then plays out its
+// animation; the air mine is gone at once.
 function mine(e, g) {
-  const p = g.player;
-  if (Math.abs(p.x - e.x) < 22 && Math.abs(p.y - 10 - e.y) < 28) {
-    g.explode(e.x, e.y, 45, 30, false);
-    g.sound('explode', e.x, e.y);
-    return false;
+  if (!activated(e)) return true;
+  if (e.ai === 'mine_ai') {
+    if (e.aistate === 0) {
+      if (g.touchesPlayer(e)) { e.setState('running'); g.explode(e.x, e.y, 40, e.xvel === 1 ? 35 : 25, false); goState(e, 1); } else e.nextPicture();
+      return true;
+    }
+    return e.nextPicture();
   }
+  if (g.touchesPlayer(e)) { g.explode(e.x, e.y, 40, 25, false); return false; }
   e.nextPicture();
   return true;
 }
-
-// ---- doors, switches, logic ----
 function door(e, g) {
   switch (e.aistate) {
     case 0:
@@ -409,7 +515,10 @@ function setOnState(e, on) {
 
 const gates = {
   or_ai(e) { setOnState(e, e.links.some((l) => l.aistate !== 0)); return true; },
-  and_ai(e) { setOnState(e, e.links.length > 0 && e.links.every((l) => l.aistate !== 0)); return true; },
+  // gates.lsp and_check: true when no input is off, which includes having no
+  // inputs left. (Inputs that die are unlinked, so an AND gate wired to a
+  // group of objects switches on once they are all gone.)
+  and_ai(e) { setOnState(e, e.links.every((l) => l.aistate !== 0)); return true; },
   xor_ai(e) { setOnState(e, e.links.filter((l) => l.aistate !== 0).length % 2 === 1); return true; },
   not_ai(e) { if (e.links.length) setOnState(e, link0(e).aistate === 0); return true; },
   indicator_ai(e) { if (e.links.length) setOnState(e, link0(e).aistate !== 0); return true; },
@@ -420,10 +529,15 @@ const gates = {
     } else if (e.links.length && (e.aistate === 0) !== (link0(e).aistate === 0)) e.a.count = time || 1;
     return true;
   },
+  // gates.lsp pulse_ai: runs only while its input is on. On for pulse_speed
+  // ticks, then off for one, and so on; frozen as it stands when the input
+  // goes off.
   pulse_ai(e) {
-    const speed = e.lv?.pulse_speed || e.xvel || 10;
-    e.a.t = (e.a.t || 0) + 1;
-    if (e.a.t >= speed) { e.a.t = 0; setOnState(e, e.aistate === 0); }
+    if (!e.links.length || link0(e).aistate === 0) return true;
+    const a = e.a;
+    a.left ??= 0;
+    if (a.left > 0) { a.left--; return true; }
+    if (e.aistate === 0) { a.left = e.lv?.pulse_speed ?? 0; setOnState(e, true); } else setOnState(e, false);
     return true;
   },
 };
@@ -622,7 +736,7 @@ function lightning(e, g) {
     if (e.stateTime < e.aitype * 2) e.setState('stopped');
     else { e.setState('running'); g.sound('teleport', e.x, e.y); goState(e, 1); }
   } else if (!e.nextPicture()) { e.aistate = 0; e.stateTime = 0; e.setState('stopped'); }
-  else if (g.touchesPlayer(e)) g.hurtPlayer(6);
+  // it does no damage (the original's hurt_radius here is commented out): it is a barrier
   return true;
 }
 
@@ -639,7 +753,8 @@ function antCrack(e, g) {
     case 3: {
       const ant = g.spawn('ANT_ROOF', e.x + e.dir * 20, e.y);
       if (ant) {
-        ant.dir = e.dir; ant.vx = e.dir * 11; ant.vy = -8;
+        ant.aitype = e.aitype; // what it fires
+        ant.dir = e.dir; ant.vx = e.dir * 20; ant.vy = -8;
         ant.setState('run_jump');
         ant.a.st = 'jump';
       }
@@ -766,8 +881,12 @@ function jugger(e, g) {
     e.setState('dieing');
     return true;
   }
-  if (a.cd > 0) a.cd--;
-  if (!a.cd && g.touchesPlayer(e)) { g.hurtPlayer(8); a.cd = 6; }
+  // jugger.lsp jug_ai: it does nothing, and cannot be hurt, until its link is
+  // on. It does not hurt by touch: it shoves the player back (push_char 35 40)
+  // and throws grenades.
+  if (!activated(e)) { e.shootable = false; return true; }
+  e.shootable = true;
+  pushChar(e, g, 35, 40);
   const stationary = e.lv?.stationary || 0;
   switch (e.aistate) {
     case 0:
@@ -787,7 +906,7 @@ function jugger(e, g) {
       if (e.stateTime > 3) {
         g.projs.push({
           kind: 'grenade', x: e.x, y: e.y - 24, px: e.x, py: e.y - 24,
-          vx: (e.lv?.throw_xvel || 8) * e.dir, vy: e.lv?.throw_yvel || -8, gravity: 2, life: 40, dmg: 40, radius: 50, mine: false, def: 'GRENADE', bounces: 0,
+          vx: (e.lv?.throw_xvel ?? 13) * e.dir, vy: e.lv?.throw_yvel ?? -10, gravity: 2, life: 40, dmg: 36, radius: 40, mine: false, def: 'GRENADE', bounces: 0, // do_explo 40 36
         });
         g.sound('throw', e.x, e.y);
         goState(e, 3);
@@ -990,8 +1109,8 @@ const ladder = () => true;
 export const behaviors = {
   ant_ai: ant,
   flyer_ai: flyer,
-  track_ai: turret,
-  spray_gun_ai: turret,
+  track_ai: trackGun,
+  spray_gun_ai: sprayGun,
   bomb_ai: bomb,
   air_mine_ai: mine,
   mine_ai: mine,

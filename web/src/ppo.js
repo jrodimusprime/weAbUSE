@@ -1179,6 +1179,7 @@ export function applyAction(g, act, faceDir = 1) {
     best = Infinity;
     for (const e of g.entities) {
       if (e.dead || !e.shootable || !BREAK_AI.has(e.ai)) continue;
+      if (e.ai !== 'block_ai' && e.links.length && e.links[0].aistate === 0) continue; // wired walls can't be shot down
       const r = g.rectOf(e);
       if (!r) continue;
       const wx = (r.x0 + r.x1) / 2, wy = (r.y0 + r.y1) / 2;
