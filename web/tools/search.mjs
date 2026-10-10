@@ -81,7 +81,7 @@ function enemyNear() {
   const p = g.player;
   for (const e of g.entities) {
     if (e.dead) continue;
-    if (e.type === 'SWITCH_BALL' && e.aistate === 0 && Math.hypot(e.x - p.x, e.y - p.y) < 180) return true; // something to shoot, too
+    if (e.type === 'SWITCH_BALL' && e.aistate === 0 && Math.hypot(e.x - p.x, e.y - p.y) < ((p.ammo.ROCKET || 0) > 0 ? 420 : 180)) return true; // something to shoot, too
     if (e.shootable && !e.hidden && e.hp > 0 && Math.abs(e.x - p.x) < ENEMY_NEAR && Math.abs(e.y - p.y) < 180 && e.def.name !== 'DARNEL' && /ant|fly|gun|jug|bomb|rob|who|boss/i.test(e.ai || '')) return true;
   }
   return false;

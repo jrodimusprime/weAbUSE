@@ -1293,7 +1293,9 @@ export function applyAction(g, act, faceDir = 1) {
   // gun's range (its bullet flies about 170 px).
   let wall = null;
   if (!target) {
-    best = 170;
+    // (...or, carrying rockets, a good deal further: chooseWeapon takes the
+    // rocket launcher to anything out of the gun's reach)
+    best = (p.owned.has('ROCKET') && (p.ammo.ROCKET || 0) > 0) ? 420 : 170;
     for (const e of g.entities) {
       if (e.dead || e.type !== 'SWITCH_BALL' || e.aistate !== 0) continue;
       const d = Math.hypot(e.x - p.x, e.y - 8 - (p.y - 15));
