@@ -432,7 +432,6 @@ export class Game {
     this.solids = [];
     for (const e of this.entities) {
       if (e.dead) continue;
-      if (e.a.solidRect) { this.solids.push({ ...e.a.solidRect, e }); continue; }
       const canBlock = e.def.flags.get('can_block') === 'T';
       if (!(SOLID_AI.has(e.ai) || canBlock)) continue;
       if (SOLID_AI.has(e.ai) && e.state === 'blocking') continue;
@@ -1119,7 +1118,7 @@ export class Game {
 
   // Force-field beam from the emitter down to the floor.
   drawBeam(e) {
-    const { x0, x1, y0, y1 } = e.a.solidRect;
+    const { x0, x1, y0, y1 } = e.a.beamRect;
     const sx = Math.round((x0 + x1) / 2 - this.cam.x);
     const top = Math.round(y0 - this.cam.y), h = Math.round(y1 - y0);
     if (sx < -4 || sx > VIEW_W + 4 || top > VIEW_H || top + h < 0) return;

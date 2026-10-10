@@ -375,6 +375,14 @@ function keysToGo(g) {
 const keysDone = (g) => g.entities.reduce((n, e) => n + (!e.dead && e.aistate !== 0 && (SWITCH_AI.has(e.ai) || (e.ai === 'death_sen_ai' && g.level.objects[e.id]?.links.length > 0)) ? 1 : 0), 0);
 // Pushers blowing across a passage (general.lsp pusher_ai) that only a key will switch off.
 const lockedPushers = (g) => g.entities.filter((e) => !e.dead && e.ai === 'pusher_ai' && e.links.length && e.links[0].aistate !== 0 && switchLocked(e));
+// What stands in the player's way: the solid objects, and the reach of every
+// force field that is on (it is not solid, but it holds the player 35 pixels
+// off to either side: doors.lsp ff_push).
+const wallsOf = (g) => {
+  const out = g.solids.slice();
+  for (const e of g.entities) if (!e.dead && e.ai === 'ff_ai' && e.a.beamRect) out.push({ x0: e.x - 29, x1: e.x + 29, y0: e.a.beamRect.y0, y1: e.a.beamRect.y1 + 20, e });
+  return out;
+};
 const isSoft = (e) => !!e && (SOFT_AI.has(e.ai) || !!e.shootable);
 const SOFT_COST = 15;
 const REACH = 3; // how many cells of walking one cell nearer the exit (through open space) is worth
@@ -397,7 +405,7 @@ export function navGraph(g, nextNum) {
   const grid = new Uint8Array(N);
   let locked = 0; // closed doors that only a switch will open
   for (let r = 0; r < H; r++) for (let c = 0; c < W; c++) if (g.tileSolid(c * tw + tw / 2, r * th + th / 2)) grid[r * W + c] = 1;
-  for (const s of g.solids) {
+  for (const s of wallsOf(g)) {
     if (s.e && NOT_WALL_AI.has(s.e.ai)) continue;
     if (isSoft(s.e) && DOOR_AI.has(s.e.ai) && s.e.aistate !== 0) continue; // already opening
     const lockedDoor = LOCKABLE_AI.has(s.e?.ai) && switchLocked(s.e);
@@ -700,7 +708,7 @@ function navSig(g, nextNum) {
   // and sub-cell movement don't invalidate the field.
   for (const e of liftsOf(g)) if (e.links.length >= 3) s += liftRuns(e) ? ';L1' : ';L0'; // lifts waiting for a switch
   s += `;P${lockedPushers(g).length}`; // pushers still blowing
-  for (const x of g.solids) {
+  for (const x of wallsOf(g)) {
     if (x.e && NOT_WALL_AI.has(x.e.ai)) continue;
     const soft = isSoft(x.e);
     if (soft && DOOR_AI.has(x.e.ai) && x.e.aistate !== 0) continue; // already opening

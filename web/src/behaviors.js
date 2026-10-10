@@ -774,17 +774,26 @@ function tpDoor(e, g) {
   return true;
 }
 
+// FORCE_FIELD — doors.lsp ff_ai. While it is on, every tick it finds where
+// its beam ends (try_move 0 (y + 200): straight down until a wall or a
+// blocking object such as a closed trap door stops it, and no further than
+// y + 200 pixels) and pushes the player out to 35 pixels either side of it
+// (ff_push). It is not a wall: nothing but the player is affected, and a beam
+// stopped by a trap door does not reach the room underneath.
 function forceField(e, g) {
-  if (e.a.endY === undefined) {
-    let y = Math.floor(e.y);
-    while (y < e.y + 400 && !g.tileSolid(Math.floor(e.x), y)) y++;
-    e.a.endY = y;
+  if (!activated(e)) { e.a.beam = false; e.a.beamRect = null; return true; }
+  const x = Math.floor(e.x);
+  const blocked = (y) => g.tileSolid(x, y) || g.solids.some((s) => s.e !== e && x >= s.x0 && x <= s.x1 && y >= s.y0 && y <= s.y1);
+  let y = Math.floor(e.y);
+  for (let n = e.y + 200; n > 0 && !blocked(y + 1); n--) y++;
+  e.a.endY = y;
+  e.a.beam = true;
+  e.a.beamRect = { x0: e.x - 2, x1: e.x + 2, y0: e.y, y1: y };
+  if (g.tickCount % 4 === 0) g.sound('swish', e.x, e.y);
+  const p = g.player;
+  if (!p.dead && p.y >= e.y && p.y <= y + 20 && Math.abs(p.x - e.x) < 35) {
+    g.pushPlayer(p.x > e.x ? 35 - (p.x - e.x) : -(35 - (e.x - p.x)));
   }
-  if (activated(e)) {
-    e.a.solidRect = { x0: e.x - 2, x1: e.x + 2, y0: e.y, y1: e.a.endY };
-    e.a.beam = true;
-    if (g.tickCount % 4 === 0) g.sound('swish', e.x, e.y);
-  } else { e.a.solidRect = null; e.a.beam = false; }
   return true;
 }
 
