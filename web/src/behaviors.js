@@ -500,16 +500,27 @@ function mine(e, g) {
   e.nextPicture();
   return true;
 }
+// ---- Jared rules: places where this port departs from the original on
+// purpose, because the original's design is not liked. Each is listed in the
+// README under "Jared rules". ----
+//
+// Level 5, the sealed room in the bottom right: taking the heart there shuts
+// the door at (2130,1394) for good, and the original's only way out is to
+// pick up the jetpack and fly back up the shaft. Here, once the jetpack
+// (object 343) has been picked up, that door opens again and stays open.
+const heldOpen = (e, g) => e.id === 16 && g.level.name === 'level05.spe' && !g.entities.some((o) => o.id === 343);
+
 function door(e, g) {
+  const held = heldOpen(e, g);
   switch (e.aistate) {
     case 0:
-      if (e.links.length && link0(e).aistate !== 0) { e.setState('running'); g.sound('swish', e.x, e.y); goState(e, 1); } else e.setState('stopped');
+      if (held || (e.links.length && link0(e).aistate !== 0)) { e.setState('running'); g.sound('swish', e.x, e.y); goState(e, 1); } else e.setState('stopped');
       break;
     case 1:
       if (!e.nextPicture()) { e.setState('blocking'); goState(e, 2); }
       break;
     case 2:
-      if (e.links.length && link0(e).aistate === 0) { e.setState('walking'); g.sound('swish', e.x, e.y); goState(e, 3); }
+      if (!held && e.links.length && link0(e).aistate === 0) { e.setState('walking'); g.sound('swish', e.x, e.y); goState(e, 3); }
       break;
     case 3:
       if (!e.nextPicture()) { e.setState('stopped'); goState(e, 0); }

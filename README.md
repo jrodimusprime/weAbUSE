@@ -42,6 +42,19 @@ training hints with the original voice-overs, speed and flight power-ups, and so
 
 Not done yet: the boss, music, saving and menus.
 
+## Jared rules
+
+This port copies the original Abuse 0.8 wherever it can. The exceptions below
+are deliberate: places where I don't like how the original works, so the port
+does something else on purpose. They are not bugs, and they should not be
+"fixed" back to the original.
+
+- **Level 5, the sealed room with the jetpack (bottom right).** In the
+  original, picking up the heart in that room shuts its door at (2130,1394)
+  for good, and the only way out is to take the jetpack and fly back up the
+  shaft you fell down. Here, once you have picked up the jetpack, that door
+  opens again and stays open.
+
 ## How it works
 
 - `web/src/spec.js` reads the `SPEC1.0` archives and decodes images, tiles and sprites.
