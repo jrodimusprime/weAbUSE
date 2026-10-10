@@ -1178,6 +1178,7 @@ const actParts = (act) => ({
 });
 
 export { actParts };
+export { keysToGo }; // (for tools/search.mjs)
 
 // Which weapon to hold is chosen for the agent, like its aim: it has no
 // weapon keys of its own, and without this it would carry rockets through a
@@ -1240,6 +1241,11 @@ export function applyAction(g, act, faceDir = 1) {
     if (Math.abs(g.player.x - e.x) < 34 && Math.abs(g.player.y - e.y) < 44) { switchLock = true; break; }
   }
   if (down && !rideLock && !switchLock) g.keys.add('ArrowDown');
+  // A power the player is carrying needs the power button held (cop.cpp
+  // do_special_power). The agent has no button of its own for it: running
+  // uses the fast power, and "jump" is the thrust of the fly power.
+  if (g.player.power === 'FAST') g.rightDown = move !== 0;
+  else if (g.player.power === 'FLY') g.rightDown = jump;
   // Aim at the nearest visible enemy that can actually be hit; otherwise
   // straight ahead. Dormant enemies (flyer_ai in aistate 0 is not targetable
   // and takes no damage, flyer.lsp) are skipped, or the aim locks onto them
@@ -1396,6 +1402,9 @@ function restoreState(g, st) {
   g.entities = g.entities.filter((e) => !e.dead);
   g.projs = [];
   g.refreshSolids();
+  // the view goes with the player: left where the level starts, it would
+  // glide across the level, with the wrong objects awake until it arrived
+  g.cam.x = p.x - 160; g.cam.y = p.y - 114;
 }
 
 export { snapshotState, restoreState };

@@ -83,11 +83,14 @@ export function firePlayer(g) {
   const oy = p.y - foff[frame * 2 + 1];
   const vx0 = p.vx / 15;
   if (w.kind === 'bullet') {
-    // SHOTGUN_BULLET (guns.lsp fire_object type 10): speed 15 + creator xvel/2,
+    // SHOTGUN_BULLET (guns.lsp fire_object type 10): speed 15,
     // lifetime 6, red palette colours (find_rgb 255 0 0 / 150 0 0). The C++
     // sgun_ai accelerates it 6/5 every tick along a fixed angle — that is what
     // gives the original its range, and there is no spread.
-    const speed = 15 + p.vx / 30;
+    // (The "+ xvel / 2" in fire_object is evaluated inside with_object on the
+    // new bullet, whose own xvel is 0: the speed is 15 whichever way the
+    // shooter is running.)
+    const speed = 15;
     g.projs.push({
       kind: 'bullet', x: ox, y: oy, px: ox, py: oy, speed, angDeg: p.aimAngle,
       vx: c * speed, vy: s * speed, life: 6, dmg: 5, mine: true,

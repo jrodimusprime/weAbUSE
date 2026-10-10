@@ -49,6 +49,60 @@ export class Assets {
     await this.registerTiles();
     const pal = await loadSpec(DATA + this.paletteFile);
     this.palette = readPalette(pal, pal.ofType(T.PALETTE)[0]);
+    await this.loadTints();
+  }
+
+  // Colour tints (ant.lsp ant_tints, guns.lsp gun_tints): each is a palette
+  // file, turned into a table that sends every colour to the closest one in
+  // the game palette (items.cpp char_tint, palette::find_closest). Indexed by
+  // the object's aitype; null is normal_tint.
+  async loadTints() {
+    const P = this.palette;
+    const closest = (r, g, b) => {
+      let c = 0, d = 0x100000;
+      for (let i = 0; i < 256; i++) {
+        const nd = (r - P[i * 4]) ** 2 + (g - P[i * 4 + 1]) ** 2 + (b - P[i * 4 + 2]) ** 2;
+        if (nd < d) { c = i; d = nd; }
+      }
+      return c;
+    };
+    const table = async (file) => {
+      if (!file) return null;
+      try {
+        const spec = await loadSpec(DATA + file);
+        const pal = readPalette(spec, spec.ofType(T.PALETTE)[0]);
+        const t = new Uint8Array(256);
+        for (let i = 0; i < 256; i++) t[i] = closest(pal[i * 4], pal[i * 4 + 1], pal[i * 4 + 2]);
+        return t;
+      } catch { return null; }
+    };
+    const A = 'art/tints/ant/', G = 'art/tints/guns/';
+    const ant = [`${A}green`, `${A}blue`, `${A}brown`, `${A}egg`, `${A}yellow`, `${A}mustard`, `${A}orange`, `${A}gray`, `${G}green`, `${A}darkblue`];
+    const gun = [null, `${G}orange`, `${G}green`, `${G}redish`, `${G}blue`];
+    this.tints = {
+      ant_draw: await Promise.all(ant.map((f) => table(`${f}.spe`))),
+      gun_draw: await Promise.all(gun.map((f) => table(f && `${f}.spe`))),
+    };
+    this.tints.ant_draw[0] = null; // ant_draw: aitype 0 is drawn plain
+  }
+
+  // The tint table an object is drawn with, if any (ant_draw / gun_draw).
+  tintFor(e) {
+    const list = this.tints?.[e.def.funs.get('draw_fun')];
+    return (list && list[e.aitype]) || null;
+  }
+
+  // `img` recoloured through a tint table (TransImage::PutRemap); transparent pixels stay transparent.
+  tinted(img, table) {
+    img.tintCache ??= new Map();
+    let out = img.tintCache.get(table);
+    if (!out) {
+      const pix = new Uint8Array(img.pix.length);
+      for (let i = 0; i < pix.length; i++) pix[i] = img.pix[i] ? table[img.pix[i]] : 0;
+      out = { ...img, pix, tintCache: null, atlasEpoch: undefined };
+      img.tintCache.set(table, out);
+    }
+    return out;
   }
 
   defChar(it, args, env) {

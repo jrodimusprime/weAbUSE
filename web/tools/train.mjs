@@ -45,6 +45,7 @@ const levelOfRec = (rec) => (rec ? (rec.levelIdx ?? LEVELS.indexOf(rec.level)) :
 const DEMO_FILE = fileURLToPath(new URL('../data/ppo-demo.json', import.meta.url));
 
 // The demo recording, from a saved store (the campaign plus the best run on the current level).
+let lastDemo = null; // what the last save did with the demo file
 async function writeDemo(store, force = false) {
   const campaign = store[CAMPAIGN_KEY] ? JSON.parse(store[CAMPAIGN_KEY]) : { frontier: 0, entry: null, legs: [] };
   const rec = store[BEST_KEY] ? JSON.parse(store[BEST_KEY]) : null;
@@ -172,7 +173,7 @@ async function main() {
     net.save();
     const store = { [PPO_KEY]: localStorage.getItem(PPO_KEY), [BEST_KEY]: best, [HIST_KEY]: JSON.stringify(hist), [VISITS_KEY]: JSON.stringify([...visits]), [CAMPAIGN_KEY]: campaign, [STATIONS_KEY]: JSON.stringify({ levelIdx: frontier(), list: stations }) };
     await writeFile(outFile, JSON.stringify({ format: 'abuse-ppo-train-1', savedAt: new Date().toISOString(), store }));
-    await writeDemo(store);
+    lastDemo = await writeDemo(store);
     await writeFile(path.join(outDir, 'report.txt'), report());
   };
 
@@ -287,7 +288,10 @@ async function main() {
   for (const w of workers) w.postMessage({ type: 'stop' });
   await save();
   console.log('\n' + report());
-  console.log(`saved ${outFile} (resume from it, or "Load training file" in the page)\nsaved ${DEMO_FILE} (what "Full game demo" plays: commit it to publish)`);
+  console.log(`saved ${outFile} (resume from it, or "Load training file" in the page)`);
+  console.log(!lastDemo ? `${DEMO_FILE} not written: nothing recorded yet`
+    : lastDemo.kept ? `kept ${DEMO_FILE} as it was: it gets further (level ${lastDemo.frontier}) than this training has`
+      : `saved ${DEMO_FILE} (what "Full game demo" plays: commit it to publish)`);
   for (const w of workers) await w.terminate();
   process.exit(process.exitCode || 0);
 }

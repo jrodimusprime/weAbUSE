@@ -412,7 +412,13 @@ const items = {
     return true;
   },
   weapon_icon_ai(e, g) {
-    if (!e.a.settled) { const m = g.moveEntity(e, 0, 10); if (m.down) e.a.settled = true; }
+    // weapons.lsp weapon_icon_ai: an icon wired to something neither drops nor
+    // can be picked up until that something is on (the reward for a kill or a
+    // switch). Once it has come to rest on the floor (aistate 1) it stays live.
+    if (e.aistate === 0) {
+      if (!activated(e)) return true;
+      if (g.moveEntity(e, 0, 10).down) e.aistate = 1;
+    }
     if (!g.touchesPlayer(e)) return true;
     const pk = pickupFor(e.type);
     if (pk) g.giveAmmo(pk.weapon, pk.amount);
@@ -731,14 +737,22 @@ function powerUp(name) {
   };
 }
 
+// RESTART_POSITION — people.lsp restart_ai. Waiting is aistate 0 before its
+// first use and 1 ever after: a station that has been used reads as "on" to
+// whatever is wired to it (level 1's secret room hangs off one). Pressing the
+// action key at it runs 2 -> 3 -> 4, and the save happens on 4.
 function saveStation(e, g) {
-  if (e.aistate === 0) {
-    if (e.state !== 'stopped') e.setState('stopped');
-    e.nextPicture();
-    if (g.touchesPlayer(e) && g.pressed('action')) { e.setState('running'); e.aistate = 1; e.a.t = 0; g.sound('switch', e.x, e.y); g.setCheckpoint(e.x, e.y); }
-  } else {
-    e.nextPicture();
-    if (++e.a.t > 6) { e.setState('stopped'); e.aistate = 0; }
+  switch (e.aistate) {
+    case 0: case 1:
+      e.nextPicture();
+      if (g.touchesPlayer(e) && g.pressed('action')) { e.aistate = 2; g.sound('switch', e.x, e.y); }
+      break;
+    case 2: e.setState('running'); e.aistate = 3; break;
+    case 3: e.aistate = 4; break;
+    default:
+      e.setState('stopped');
+      e.aistate = 1;
+      g.setCheckpoint(e.x, e.y);
   }
   return true;
 }
@@ -889,7 +903,13 @@ function boulder(e, g) {
     a.box = r && d ? { hw: Math.max(e.x - d.x0, d.x1 - e.x), top: e.y - d.y0, bot: e.y - d.y1 } : { hw: 19, top: 35, bot: 8 };
   }
   const { hw, top, bot } = a.box;
-  const free = (x, y) => !g.boxHits(x, y - bot, hw, top - bot, e);
+  // Objects it already overlaps do not hold it: the original's collision
+  // only stops a move that crosses into something, so boulders stacked on one
+  // spot (a pile released together) roll out of each other, as the player
+  // walks out of a door that shut on them.
+  const inside = new Set([e]);
+  for (const o of g.solids) if (o.e !== e && e.x + hw >= o.x0 && e.x - hw <= o.x1 && e.y - bot - 1 >= o.y0 && e.y - top <= o.y1) inside.add(o.e);
+  const free = (x, y) => !g.boxHits(x, y - bot, hw, top - bot, inside);
   // the straight move, a pixel at a time
   const n = Math.max(Math.abs(ox), Math.abs(oy));
   let k = 0;

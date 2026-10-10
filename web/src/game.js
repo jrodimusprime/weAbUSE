@@ -37,6 +37,8 @@ const EXTRA_DEFS = [
   ...WEAPON_ORDER.map((w) => WEAPONS[w].top),
 ];
 const MIDDLE_DRAW = new Set(['exp_draw', 'middle_draw']);
+const POWER_STATES = new Set(['stopped', 'running', 'start_run_jump', 'run_jump', 'run_jump_fall', 'end_run_jump']);
+const POWER_ICON = { FAST: 'fast_image', FLY: 'fly_image', SNEAKY: 'sneaky_image', HEALTH: 'b_check_image' };
 
 export class Game {
   constructor(canvas, hud) {
@@ -499,22 +501,23 @@ export class Game {
     e.hw = 0;
   }
 
+  // duong.lsp tp2_ai: the player is simply set to the destination's x and
+  // (y - 16). Objects standing there (the destination teleporter itself, a
+  // door, a wired wall) do not matter: the player walks out of anything they
+  // are already inside (see freePlayer). Only if the level's own walls leave
+  // no room at that exact spot is the landing moved, and then to the nearest
+  // free place, a few pixels away.
   teleportPlayer(x, y, yOffset = 0) {
     const p = this.player;
+    const objects = new Set(this.solids.map((s) => s.e));
+    const blocked = (bx, by) => this.boxHits(bx, by, HALF_W, BODY_H, objects);
     let sx = x, sy = y - yOffset;
-    if (this.boxHits(sx, sy, HALF_W, BODY_H, null)) {
-      let found = false;
-      for (let d = 3; d <= VIEW_W * 2 && !found; d += 3) {
-        for (const dx of [-d, d]) {
-          if (!this.boxHits(x + dx, sy, HALF_W, BODY_H, null)) { sx = x + dx; found = true; break; }
+    if (blocked(sx, sy)) {
+      search: for (let d = 1; d <= 60; d++) {
+        for (const [dx, dy] of [[0, -d], [0, d], [-d, 0], [d, 0], [-d, -d], [d, -d], [-d, d], [d, d]]) {
+          if (!blocked(x + dx, sy + dy)) { sx = x + dx; sy += dy; break search; }
         }
       }
-      for (let d = 3; d <= VIEW_H && !found; d += 3) {
-        for (const dy of [-d, d]) {
-          if (!this.boxHits(x, sy + dy, HALF_W, BODY_H, null)) { sy += dy; found = true; break; }
-        }
-      }
-      if (found) this.toast('Teleporter landing adjusted to clear the wall');
     }
     p.x = sx; p.y = sy; p.vx = 0; p.vy = 0; p.ground = false;
   }
@@ -648,7 +651,23 @@ export class Game {
     if (p.cooldown > 0) p.cooldown--;
     // The original's vertical physics, in its order (cop.cpp cop_mover, then
     // objects.cpp mover and tick), at the 15 Hz tick; px/s = 15 * px/tick.
-    if (!p.climbing && !(this.rightDown && p.power === 'FLY')) {
+    // cop.cpp do_special_power, FLY_POWER: each tick the power button is held
+    // the player is put in the air with the fall's acceleration cleared, a
+    // fall is halved, and they are pushed up by 2 (3 while pressing up),
+    // trailing a cloud. It is a thrust against gravity, not free flight.
+    const special = this.rightDown && !p.dead ? p.power : null;
+    if (special === 'FLY' && !p.climbing) {
+      const k = this.keys;
+      const up = k.has('ArrowUp') || k.has('KeyW') || k.has('Space') || k.has('KeyZ');
+      this.effect('CLOUD', p.x - p.dir * 10, p.y + this.tickCount % 5);
+      p.ground = false; p.jumpQueued = false;
+      p.yacel = 0; p.fyacel = 0;
+      if (p.vy > 0) p.vy = Math.trunc(p.vy / 15 / 2) * 15;
+      p.vy -= (up ? 3 : 2) * 15;
+      this.sound('fly03', p.x, p.y, 32 / 127); // FLY_SND
+    }
+    if (special === 'FAST' && this.tickCount % 16 === 0) this.sound('speed02', p.x, p.y, 100 / 127); // SPEED_SND
+    if (!p.climbing) {
       // cop_mover terminal velocity: above 10 px/tick, yacel is zeroed and
       // the fall slows by 1.
       if (p.vy > 150) { p.vy -= 15; p.yacel = 0; }
@@ -656,7 +675,8 @@ export class Game {
       // ground, i.e. while gravity is off. jumpQueued is only set on a frame
       // where the player was standing.
       if (p.jumpQueued && !p.dead && p.vy >= 0) {
-        p.vy = -JUMP_VEL; p.ground = false;
+        // (FAST_POWER in use: "if they just jumped, make them go higher", yvel + yvel / 3)
+        p.vy = special === 'FAST' ? -JUMP_VEL - Math.trunc(JUMP_VEL / 15 / 3) * 15 : -JUMP_VEL; p.ground = false;
         p.yacel = 0; p.fyacel = 0; p.fyvel = 0;
       }
       if (p.ground) {
@@ -751,7 +771,12 @@ export class Game {
     const up = k.has('ArrowUp') || k.has('KeyW');
     const down = k.has('ArrowDown') || k.has('KeyS');
     const ladder = this.inLadder(p);
-    const jump = k.has('Space') || k.has('KeyZ') || (up && !ladder && !p.ladderExit);
+    // cop.cpp climb_handler: once off the top of a ladder, Up is an ordinary
+    // jump again (the ladder only takes hold more than 8 px below its top).
+    // That hop is how one ladder leads to the next where they are stacked
+    // through a floor: holding Up climbs, steps off, hops and catches the
+    // ladder above.
+    const jump = k.has('Space') || k.has('KeyZ') || (up && !ladder);
 
     if (ladder && (up || down) && !p.climbing) p.climbing = true;
     if (!ladder) p.climbing = false;
@@ -785,13 +810,15 @@ export class Game {
       const power = (this.rightDown && p.power) || (this.god ? 'FAST' : null);
       // Original mover: the same start_accel applies on the ground and in the
       // air; air speed is capped at jump_top_speed (10 px/tick).
-      const run = RUN_SPEED * (power === 'FAST' ? 1.7 : 1);
-      const cap = p.ground ? run : AIR_SPEED;
-      if (target) { p.dir = target; p.vx += target * ACCEL * dt; p.vx = Math.max(-cap, Math.min(cap, p.vx)); }
+      // cop.cpp do_special_power, FAST_POWER: while the button is held the
+      // player is moved a second time every tick, i.e. twice as fast on the
+      // ground and in the air.
+      const fast = power === 'FAST' ? 2 : 1;
+      const cap = (p.ground ? RUN_SPEED : AIR_SPEED) * fast;
+      if (target) { p.dir = target; p.vx += target * ACCEL * fast * dt; p.vx = Math.max(-cap, Math.min(cap, p.vx)); }
       else p.vx -= Math.sign(p.vx) * Math.min(Math.abs(p.vx), DECEL * dt);
 
-      if (power === 'FLY') p.vy = ((down ? 1 : 0) - (up || jump ? 1 : 0)) * 110;
-      else if (jump && p.ground) p.jumpQueued = true; // taken on the next tick
+      if (jump && p.ground) p.jumpQueued = true; // taken on the next tick
 
       const wasGround = p.ground;
       this.freePlayer();
@@ -811,9 +838,6 @@ export class Game {
       // and run cycles both run at the one fixed rate.
       p.anim += dt / TICK;
       p.state = !p.ground ? (p.vy < 0 ? 'run_jump' : 'run_jump_fall') : Math.abs(p.vx) > 10 ? 'running' : 'stopped';
-      const moving = Math.abs(p.vx) > 10;
-      if (power === 'FLY') p.state = moving ? 'fly_running' : 'fly_stopped';
-      else if (power === 'FAST' && p.ground && moving) p.state = 'fast_running';
     }
 
     if (this.mouse) {
@@ -925,11 +949,12 @@ export class Game {
   }
 
   // ---- drawing ----
-  blit(def, stateName, frame, x, y, dir, middle = false) {
+  blit(def, stateName, frame, x, y, dir, middle = false, tint = null) {
     const frames = def.states.get(stateName) || def.states.get('stopped');
     if (!frames || !def.file) return;
-    const img = this.assets.sprite(def.file, frames[Math.floor(frame) % frames.length]);
+    let img = this.assets.sprite(def.file, frames[Math.floor(frame) % frames.length]);
     if (!img) return;
+    if (tint) img = this.assets.tinted(img, tint);
     const ox = dir < 0 ? img.w - img.xcfg - 1 : img.xcfg;
     const yy = middle ? y + img.h / 2 : y;
     this.r.draw(img, Math.round(x - ox - this.cam.x), Math.round(yy - img.h + 1 - this.cam.y), { flip: dir < 0 });
@@ -975,7 +1000,7 @@ export class Game {
       if (isHiddenInPlay(e.def)) continue;
       if (e.ai === 'tele_beam_ai' && e.fade < 8 && (this.tickCount & 1)) continue;
       if (MIDDLE_DRAW.has(e.def.funs.get('draw_fun'))) { fx.push([e, x, y]); continue; }
-      this.blit(e.def, e.state, e.frame, x, y, e.dir);
+      this.blit(e.def, e.state, e.frame, x, y, e.dir, false, this.assets.tintFor(e));
       if (e.a.beam) this.drawBeam(e);
     }
 
@@ -984,12 +1009,17 @@ export class Game {
     // just_fired: the original draws the player with the bright tint for the
     // frame after firing (people.lsp player_draw / bright_tint).
     if (p.justFired) r.setBright(1.8);
-    if (body) this.blit(body, p.dead ? 'dead' : p.state, p.anim, p.x, p.y, p.dir);
+    // cop.cpp bottom_draw: while the player holds the fast or fly power the
+    // legs are drawn from that power's own set of states (fast_running,
+    // fly_stopped, ...), whether or not the power is being used.
+    const pre = p.power === 'FAST' ? 'fast_' : p.power === 'FLY' ? 'fly_' : '';
+    const drawState = pre && POWER_STATES.has(p.state) && body?.states.has(pre + p.state) ? pre + p.state : p.state;
+    if (body) this.blit(body, p.dead ? 'dead' : drawState, p.anim, p.x, p.y, p.dir);
     const top = !p.dead && this.assets.defs.get(WEAPONS[p.weapon]?.top);
     if (top && !p.climbing) {
       // cop.cpp top_draw: the chest rides at bot.y + 29 - picture_height, so it
       // bobs with the breathing frames (the stopped frames are 28-30 px tall).
-      const bf = body.states.get(p.state) || body.states.get('stopped');
+      const bf = body.states.get(drawState) || body.states.get('stopped');
       const bimg = bf ? this.assets.sprite(body.file, bf[Math.floor(p.anim) % bf.length]) : null;
       const topY = p.y + 29 - (bimg?.h || 29);
       this.blit(top, 'stopped', p.aim, p.dir > 0 ? p.x : p.x + 4, topY, 1);
@@ -999,6 +1029,10 @@ export class Game {
     r.setLit(false);
     drawProjectiles(this, alpha);
     for (const [e, x, y] of fx) this.blit(e.def, e.state, e.frame, x, y, e.dir, true);
+    // The power the player is carrying, top right of the view (people.lsp:
+    // put_image at view_x2 - 20, view_y1 + 5).
+    const icon = POWER_ICON[p.power] && this.assets.sprite('art/misc.spe', POWER_ICON[p.power]);
+    if (icon) r.draw(icon, VIEW_W - 1 - 20, 5);
     r.flush();
   }
 
@@ -1020,6 +1054,6 @@ export class Game {
     const here = this.godDeaths[this.level.name] || 0;
     const total = Object.values(this.godDeaths).reduce((a, b) => a + b, 0);
     const ammo = this.god ? '∞' : (p.ammo[p.weapon] || 0);
-    this.hud.textContent = `${this.level.name}  HP ${Math.ceil(p.hp)}  ${w.label} ${ammo}  ${owned}${this.god ? `  GOD deaths: ${here} here, ${total} total` : ''}${this.msgTime > 0 ? `  -- ${this.msg}` : ''}`;
+    this.hud.textContent = `${this.level.name}  HP ${Math.ceil(p.hp)}  ${w.label} ${ammo}  ${owned}${p.power === 'FAST' || p.power === 'FLY' ? `  ${p.power === 'FAST' ? 'RUN' : 'FLY'}: hold right mouse` : ''}${this.god ? `  GOD deaths: ${here} here, ${total} total` : ''}${this.msgTime > 0 ? `  -- ${this.msg}` : ''}`;
   }
 }
