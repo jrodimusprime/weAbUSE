@@ -98,6 +98,17 @@ function randomAct(dirBias) {
     climb = 6 + Math.floor(rnd() * 30);
     return rnd() < 0.5 ? ACT(0, 0, 1, 0) : ACT(0, 1, 0, 0);
   }
+  // Riding a lift that is on the move: stand still and let it carry. Some
+  // rides are long (level 8's run for 27 seconds), and random play walks off
+  // the edge of a 60-pixel deck long before that.
+  for (const e of g.entities) {
+    if (e.ai !== 'platform_ai' || e.dead || e.aistate === 0) continue;
+    const deck = g.deckRect(e);
+    if (deck && p.x >= deck.x0 - 4 && p.x <= deck.x1 + 4 && Math.abs(p.y - deck.y0) < 10 && rnd() < 0.9) {
+      climb = 10 + Math.floor(rnd() * 40);
+      return ACT(0, 0, 0, enemyNear() && rnd() < 0.7 ? 1 : 0);
+    }
+  }
   const r = rnd();
   const move = r < 0.12 ? 0 : (rnd() < 0.5 + dirBias * 0.25 ? 1 : -1);
   const jump = rnd() < 0.3 ? 1 : 0;
