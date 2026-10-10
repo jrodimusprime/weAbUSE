@@ -301,17 +301,24 @@ async function replays(lv, pieces) {
   return true;
 }
 if (process.argv.includes('--recheck')) {
-  const { unlink } = await import('node:fs/promises');
+  // (dropped routes are moved aside, not deleted: if the change to the game is
+  // taken back, they are good again; copy them back from train-out/levels/dropped/)
+  const { rename } = await import('node:fs/promises');
+  const aside = `${LEVEL_DIR}dropped/`;
+  await mkdir(aside, { recursive: true });
   const kept = [], dropped = [];
   for (const leg of [...state.legs]) {
     if (await replays(leg.level, leg.pieces)) kept.push(leg.level);
-    else { dropped.push(leg.level); state.legs = state.legs.filter((l) => l !== leg); }
+    else {
+      dropped.push(leg.level); state.legs = state.legs.filter((l) => l !== leg);
+      await writeFile(`${aside}level${nn(leg.level)}.json`, JSON.stringify({ level: leg.level, solved: true, carried: false, pieces: leg.pieces }));
+    }
   }
   for (let lv = 0; lv < LEVELS.length; lv++) {
     let f = null;
     try { f = JSON.parse(await readFile(levelFile(lv), 'utf8')); } catch { continue; }
     if (!f.solved) continue;
-    if (await replays(lv, f.pieces)) kept.push(lv); else { dropped.push(lv); await unlink(levelFile(lv)); }
+    if (await replays(lv, f.pieces)) kept.push(lv); else { dropped.push(lv); await rename(levelFile(lv), `${aside}level${nn(lv)}.json`); }
   }
   await save();
   console.log(`routes that still replay: levels ${kept.sort((a, b) => a - b).join(', ') || 'none'}\nroutes dropped (to be searched again): levels ${dropped.sort((a, b) => a - b).join(', ') || 'none'}`);
