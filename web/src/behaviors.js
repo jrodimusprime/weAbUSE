@@ -448,7 +448,10 @@ const items = {
     if (e.aistate === 0) {
       if (g.touchesPlayer(e)) {
         const p = g.player;
-        p.vy = Math.max(-560, p.vy - Math.abs(e.yvel || 15) * 15);
+        // general.lsp spring_ai: the spring's own yvel is added to the
+        // player's, with no limit. A -50 spring throws the player 334 px up
+        // (level 2 ends with one under a ladder 262 px overhead).
+        p.vy += e.yvel * 15;
         p.ground = false;
         e.setState('running');
         e.aistate = 1;
