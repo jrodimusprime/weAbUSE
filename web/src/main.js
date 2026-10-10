@@ -60,7 +60,9 @@ const describeDemo = async () => {
   void on;
   const levels = file ? file.passed : loadCampaign().legs.map((l) => l.level);
   if (!fullGameBtn.classList.contains('on')) {
-    fullGameBtn.textContent = !passed ? 'Demo' : passed === 1 ? `Demo (level ${levels[0]})` : `Demo (levels ${levels[0]} to ${levels[levels.length - 1]})`;
+    const run = levels.every((l, i) => i === 0 || l === levels[i - 1] + 1); // no gaps
+    fullGameBtn.textContent = !passed ? 'Demo' : passed === 1 ? `Demo (level ${levels[0]})`
+      : run ? `Demo (levels ${levels[0]} to ${levels[levels.length - 1]})` : `Demo (levels ${levels.join(', ')})`;
   }
 };
 describeDemo();

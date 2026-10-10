@@ -16,6 +16,8 @@
 //   node web/tools/search.mjs --per-level 20   minutes to spend on a level before giving up (default 30)
 //   node web/tools/search.mjs --levels 3       stop after passing this many more levels
 //   node web/tools/search.mjs --seed 7         a different run of the dice
+//   node web/tools/search.mjs --parallel       every remaining level at once, each in its own process
+//                                              (--jobs 6 at a time, --upto 20 the last level to try)
 //
 // Writes train-out/search.json (progress; resumed from) and
 // web/data/ppo-demo.json (what "Full game demo" plays).
@@ -218,32 +220,110 @@ async function searchLevel(lv, entry, deadline) {
 
 // ---- the campaign ----
 await mkdir(OUT, { recursive: true });
+const LEVEL_DIR = `${OUT}levels/`;
+await mkdir(LEVEL_DIR, { recursive: true });
+const levelFile = (lv) => `${LEVEL_DIR}level${String(lv).padStart(2, '0')}.json`;
 let state = { frontier: 0, entry: null, legs: [], partial: null };
 if (!process.argv.includes('--fresh')) { try { state = JSON.parse(await readFile(STATE_FILE, 'utf8')); } catch { /* nothing to resume */ } }
 
-async function save() {
-  await writeFile(STATE_FILE, JSON.stringify(state));
-  const demo = ppo.demoFile({ frontier: state.frontier, legs: state.legs }, state.partial);
-  demo.source = 'search';
-  if (!demo.pieces.length) return;
+// The demo: every level that has a route, in order. First the levels passed
+// one after another (health and weapons carried from each into the next),
+// then any searched on its own from a fresh start (train-out/levels/).
+async function writeDemo() {
+  const legs = new Map(state.legs.map((l) => [l.level, l.pieces]));
+  for (let lv = 0; lv < LEVELS.length; lv++) {
+    if (legs.has(lv)) continue;
+    try { const f = JSON.parse(await readFile(levelFile(lv), 'utf8')); if (f.solved) legs.set(lv, f.pieces); } catch { /* not searched */ }
+  }
+  const levels = [...legs.keys()].sort((a, b) => a - b);
+  const pieces = [];
+  for (const lv of levels) for (const piece of legs.get(lv)) pieces.push({ ...piece, levelIdx: lv });
+  let frontier = 0;
+  while (legs.has(frontier)) frontier++;
+  if (state.partial && !legs.has(state.partial.levelIdx) && state.partial.levelIdx === frontier) for (const piece of state.partial.pieces) pieces.push({ ...piece, levelIdx: frontier });
+  if (!pieces.length) return levels;
   // The file may hold the older PPO recording: kept beside the search's progress the first time it is replaced.
   try { const old = JSON.parse(await readFile(DEMO_FILE, 'utf8')); if (old.source !== 'search') await copyFile(DEMO_FILE, `${OUT}ppo-demo-before-search.json`); } catch { /* none */ }
-  await writeFile(DEMO_FILE, JSON.stringify(demo));
+  await writeFile(DEMO_FILE, JSON.stringify({ format: ppo.DEMO_FORMAT, savedAt: new Date().toISOString(), source: 'search', passed: levels, frontier, dist: null, pieces }));
+  return levels;
+}
+async function save() {
+  await writeFile(STATE_FILE, JSON.stringify(state));
+  await writeDemo();
+}
+const nn = (lv) => String(lv).padStart(2, '0');
+const passedLine = (lv, r) => `level ${nn(lv)}: PASSED in ${(r.ms / 1000).toFixed(0)} s of searching (${r.iter} bursts, ${r.cells} cells); the route is ${(r.pieces.reduce((a, p) => a + p.steps, 0) / 60).toFixed(0)} s of play in ${r.pieces.length} pieces`;
+const failedLine = (lv, r) => `level ${nn(lv)}: NOT passed in ${(r.ms / 60000).toFixed(1)} min (${r.iter} bursts, ${r.cells} cells). Nearest the exit: ${ppo.fmtDist(r.dist)} at (${r.at}).`;
+
+// ---- one level on its own (what --parallel runs, one process per level) ----
+// It starts as the game starts that level when chosen from the menu: full
+// health and the machine gun. (Only the level the campaign has reached starts
+// with what the player carried out of the level before.)
+if (process.argv.includes('--only')) {
+  const lv = +arg('only');
+  const carried = lv === state.frontier && lv > 0;
+  const r = await searchLevel(lv, carried ? state.entry : null, Date.now() + PER_LEVEL);
+  await writeFile(levelFile(lv), JSON.stringify({ level: lv, solved: r.solved, carried, pieces: r.pieces, ms: r.ms, iter: r.iter, cells: r.cells, dist: r.dist ?? null, at: r.at ?? null }));
+  console.log(r.solved ? passedLine(lv, r) : failedLine(lv, r));
+  process.exit(0);
 }
 
+// ---- many levels at once ----
+//   node web/tools/search.mjs --parallel [--jobs 6] [--per-level 30] [--upto 20]
+// Every level from the campaign's current one up to --upto (default 20: the
+// last level cannot be finished until its boss and ending are ported) that
+// has no route yet is searched in a process of its own.
+if (process.argv.includes('--parallel')) {
+  const { spawn } = await import('node:child_process');
+  const { openSync } = await import('node:fs');
+  const jobs = +arg('jobs', 6), upto = +arg('upto', 20);
+  const todo = [];
+  for (let lv = state.frontier; lv <= upto; lv++) {
+    let done = false;
+    try { done = JSON.parse(await readFile(levelFile(lv), 'utf8')).solved; } catch { /* not searched */ }
+    if (!done) todo.push(lv);
+  }
+  console.log(`searching levels ${todo.join(', ')}: ${jobs} at a time, up to ${PER_LEVEL / 60000} min each`);
+  let running = 0;
+  await new Promise((resolve) => {
+    const next = () => {
+      if (!todo.length && !running) { resolve(); return; }
+      while (running < jobs && todo.length) {
+        const lv = todo.shift();
+        running++;
+        const log = openSync(`${LEVEL_DIR}level${nn(lv)}.log`, 'w');
+        const child = spawn(process.execPath, [fileURLToPath(import.meta.url), '--only', String(lv), '--per-level', String(PER_LEVEL / 60000), '--seed', String(seed + lv)], { stdio: ['ignore', log, log] });
+        child.on('exit', async (code) => {
+          running--;
+          let line = `level ${nn(lv)}: the search process stopped (exit code ${code}); see ${LEVEL_DIR}level${nn(lv)}.log`;
+          try { const f = JSON.parse(await readFile(levelFile(lv), 'utf8')); line = f.solved ? passedLine(lv, f) : failedLine(lv, f); } catch { /* crashed before writing */ }
+          console.log(line);
+          const levels = await writeDemo();
+          console.log(`  demo now has levels ${levels.join(', ')}`);
+          next();
+        });
+      }
+    };
+    next();
+  });
+  const levels = await writeDemo();
+  console.log(`\nlevels with a route: ${levels.join(', ') || 'none'}\nsaved ${DEMO_FILE}`);
+  process.exit(0);
+}
+
+// ---- one level after another ----
 let passed = 0;
 while (state.frontier < LEVELS.length && passed < MAX_LEVELS) {
   const lv = state.frontier;
-  console.log(`level ${String(lv).padStart(2, '0')}: searching (up to ${PER_LEVEL / 60000} min)`);
+  console.log(`level ${nn(lv)}: searching (up to ${PER_LEVEL / 60000} min)`);
   const r = await searchLevel(lv, state.entry, Date.now() + PER_LEVEL);
   if (!r.solved) {
     state.partial = { levelIdx: lv, pieces: r.pieces, dist: r.dist };
     await save();
-    console.log(`level ${String(lv).padStart(2, '0')}: NOT passed in ${(r.ms / 60000).toFixed(1)} min (${r.iter} bursts, ${r.cells} cells). Nearest the exit: ${ppo.fmtDist(r.dist)} at (${r.at}).`);
+    console.log(failedLine(lv, r));
     break;
   }
-  const playSeconds = r.pieces.reduce((a, p) => a + p.steps, 0) / 60;
-  console.log(`level ${String(lv).padStart(2, '0')}: PASSED in ${(r.ms / 1000).toFixed(0)} s of searching (${r.iter} bursts, ${r.cells} cells); the route is ${playSeconds.toFixed(0)} s of play in ${r.pieces.length} pieces`);
+  console.log(passedLine(lv, r));
   // enter the next level as the game would, carrying health and weapons over
   await g.start(LEVELS[lv + 1] ?? LEVELS[lv]);
   g.player.ammo.MGUN = Math.max(g.player.ammo.MGUN || 0, 100);
