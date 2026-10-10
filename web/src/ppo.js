@@ -37,12 +37,23 @@ const HIDDEN = 1e12;        // renderThrottle value that never draws
 // the agent in place: somewhere it has rarely been is always worth going to.
 const COMPASS = 4;          // per cell closer to the exit along the walking route (was 8)
 const EXPLORE = 3;          // for a 40 px cell no run has reached before; falls as 1/sqrt(runs that have)
-const SWITCH_PULL = 2;       // per cell closer to the nearest switch that is still off
+const SWITCH_PULL = 1;       // per cell closer to the nearest switch still off, while the exit itself can be steered for
 const SWITCH_ON = 10;       // for turning a switch on (once per switch per run)
 const HEALTH = 0.1;          // per point of health regained (a heart restores 20, so +2)
 const PICKUP = 1;           // for collecting ammo; a weapon the player did not have pays 3
 const STATION = 5;          // for using a save station (once per station per run)
-const STALL = 15 * 60 * 4;  // a run ends after 60 game-seconds with nowhere new and no progress (60 Hz steps)
+// When a run is given up on (all in 60 Hz game steps). "Progress" is reaching
+// a cell new to this run, a new best distance, a switch or a save station.
+//  - really stuck: no progress for 60 game-seconds AND it has not left the
+//    area it is in (AREA pixels each way) in that time;
+//  - going nowhere: no progress for 3 game-minutes, wherever it has wandered;
+//  - and no level gets more than 20 game-minutes.
+// A run that is still moving through the level, backtracking across rooms it
+// has already seen, is therefore left alone for a good while.
+const STALL = 15 * 60 * 4;
+const STALL_ROAMING = 15 * 180 * 4;
+const LEVEL_CAP = 15 * 1200 * 4;
+const AREA = 220;
 export const VISITS_KEY = 'abuse.ppo.visits1';
 const WIN_C = 20, WIN_R = 12, CH = 4;
 export const OBS_N = WIN_C * WIN_R * CH + 20;
@@ -261,7 +272,7 @@ export function buildObs(g, dist) {
   }
   obs[k++] = exit ? (exit.x - p.x) / 100 : 0;
   obs[k++] = exit ? (exit.y - p.y) / 100 : 0;
-  obs[k++] = (isFinite(dist) ? Math.min(dist >= OPEN ? dist - OPEN : dist, 5000) : 5000) / 50; // distance to the exit, capped
+  obs[k++] = (isFinite(dist) ? Math.min(dist >= LOCKED ? (dist - LOCKED) % 1000 : dist >= OPEN ? dist - OPEN : dist, 5000) : 5000) / 50; // distance to the exit (or the next switch), capped
   obs[k++] = enemy ? (enemy.x - p.x) / 100 : 0;
   obs[k++] = enemy ? (enemy.y - p.y) / 100 : 0;
   obs[k++] = p.vx / 100;
@@ -320,6 +331,8 @@ export function pathDistStep(g, nextNum = null) {
 }
 
 const DOOR_AI = new Set(['sdoor_ai', 'strap_door_ai']);
+// Switches the player works with the action key. Off (aistate 0) until used.
+const SWITCH_AI = new Set(['switcher_ai', 'switch_once_ai', 'switch_delay_ai']);
 // Obstacles the player can get through: doors (opened by a switch or sensor)
 // and anything that is destroyed by shooting it (walls, bricks, gun turrets).
 const SOFT_AI = new Set(['sdoor_ai', 'strap_door_ai', 'hwall_ai', 'big_wall_ai', 'block_ai', 'ff_ai']);
@@ -329,6 +342,39 @@ const SOFT_AI = new Set(['sdoor_ai', 'strap_door_ai', 'hwall_ai', 'big_wall_ai',
 const NOT_WALL_AI = new Set(['platform_ai', 'next_level_ai', 'tp2_ai', 'tpd_ai']);
 // A lift with a third link only runs while that object (a switch) is on (platform.lsp).
 const liftRuns = (e) => e.links.length < 3 || e.links[2].aistate !== 0;
+// A door, force field or bank of pushers that only a "key" will clear: found
+// by following its links back through the logic gates to a switch, or to a
+// death sensor (which fires when the creature it watches has been killed). A
+// door worked by an ordinary sensor opens as the player walks up to it; this
+// kind does not, so until it clears it is a wall, and the way past it is the
+// way to its key.
+const GATE_AI = new Set(['and_ai', 'or_ai', 'xor_ai', 'not_ai', 'delay_ai', 'pulse_ai', 'indicator_ai']);
+function switchLocked(e, depth = 0, seen = new Set()) {
+  for (const l of e.links) {
+    if (seen.has(l)) continue;
+    seen.add(l);
+    if (SWITCH_AI.has(l.ai) || l.ai === 'death_sen_ai') return true;
+    if (depth < 8 && GATE_AI.has(l.ai) && switchLocked(l, depth + 1, seen)) return true;
+  }
+  return false;
+}
+const LOCKABLE_AI = new Set(['sdoor_ai', 'strap_door_ai', 'ff_ai']);
+// The keys still to be dealt with: switches that are off, and creatures a
+// death sensor is waiting on.
+function keysToGo(g) {
+  const out = [];
+  for (const e of g.entities) {
+    if (e.dead) continue;
+    if (e.aistate === 0 && SWITCH_AI.has(e.ai)) out.push(e);
+    else if (e.ai === 'death_sen_ai' && e.aistate === 0) for (const l of e.links) if (!l.dead && !out.includes(l)) out.push(l);
+  }
+  return out;
+}
+// How many keys have been dealt with (switches on, death sensors satisfied): progress worth banking at a save station.
+// (a death sensor that watched nothing from the start does not count: the level file says what it was wired to)
+const keysDone = (g) => g.entities.reduce((n, e) => n + (!e.dead && e.aistate !== 0 && (SWITCH_AI.has(e.ai) || (e.ai === 'death_sen_ai' && g.level.objects[e.id]?.links.length > 0)) ? 1 : 0), 0);
+// Pushers blowing across a passage (general.lsp pusher_ai) that only a key will switch off.
+const lockedPushers = (g) => g.entities.filter((e) => !e.dead && e.ai === 'pusher_ai' && e.links.length && e.links[0].aistate !== 0 && switchLocked(e));
 const isSoft = (e) => !!e && (SOFT_AI.has(e.ai) || !!e.shootable);
 const SOFT_COST = 15;
 const REACH = 3; // how many cells of walking one cell nearer the exit (through open space) is worth
@@ -349,11 +395,14 @@ export function navGraph(g, nextNum) {
   // finite, falls as the agent approaches the obstacle, and drops sharply once
   // it is opened or destroyed (which the PPO experiences as a progress burst).
   const grid = new Uint8Array(N);
+  let locked = 0; // closed doors that only a switch will open
   for (let r = 0; r < H; r++) for (let c = 0; c < W; c++) if (g.tileSolid(c * tw + tw / 2, r * th + th / 2)) grid[r * W + c] = 1;
   for (const s of g.solids) {
     if (s.e && NOT_WALL_AI.has(s.e.ai)) continue;
-    const soft = isSoft(s.e);
-    if (soft && DOOR_AI.has(s.e.ai) && s.e.aistate !== 0) continue; // already opening
+    if (isSoft(s.e) && DOOR_AI.has(s.e.ai) && s.e.aistate !== 0) continue; // already opening
+    const lockedDoor = LOCKABLE_AI.has(s.e?.ai) && switchLocked(s.e);
+    if (lockedDoor) locked++;
+    const soft = isSoft(s.e) && !lockedDoor;
     const c0 = Math.max(0, Math.floor(s.x0 / tw) - 1), c1 = Math.min(W - 1, Math.floor(s.x1 / tw) + 1);
     const r0 = Math.max(0, Math.floor(s.y0 / th) - 1), r1 = Math.min(H - 1, Math.floor(s.y1 / th) + 1);
     for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) {
@@ -361,6 +410,16 @@ export function navGraph(g, nextNum) {
       if (x < s.x0 || x > s.x1 || (r + 1) * th <= s.y0 || r * th >= s.y1) continue;
       const idx = r * W + c;
       if (!soft) grid[idx] = 1; else if (grid[idx] === 0) grid[idx] = 2;
+    }
+  }
+  // A bank of pushers the player cannot get past (they push as fast as the
+  // player runs) is a wall for as long as its key keeps it on.
+  for (const e of lockedPushers(g)) {
+    const r = g.rectOf(e);
+    if (!r) continue;
+    locked++;
+    for (let rr = Math.max(0, Math.floor(r.y0 / th) - 1); rr <= Math.min(H - 1, Math.floor(r.y1 / th) + 1); rr++) {
+      for (let c = Math.max(0, Math.floor(r.x0 / tw)); c <= Math.min(W - 1, Math.floor(r.x1 / tw)); c++) grid[rr * W + c] = 1;
     }
   }
   // hard(): blocks the body. floorOK(): can be stood on (hard or soft).
@@ -505,7 +564,7 @@ export function navGraph(g, nextNum) {
       if (hard(nc, r - 1)) continue;
       let rr = r;
       for (; rr < Math.min(H, r + MAX_FALL); rr++) if (floorOK(nc, rr)) break;
-      if (rr < H && floorOK(nc, rr)) relax(nc, rr, rr - r + 0.5, 'drop');
+      if (rr > r && rr < H && floorOK(nc, rr)) relax(nc, rr, rr - r + 0.5, 'drop'); // (level ground is a walk, above)
     }
     for (const s of [-1, 1]) {
       const n1 = c + s;
@@ -532,7 +591,7 @@ export function navGraph(g, nextNum) {
     const js = jumpTo.get(cur);
     if (js) for (const j of js) relax(j.to % W, Math.floor(j.to / W), j.cost, 'ride');
   };
-  return { W, H, N, grid, goals, expand, cellOf, floorOK, bodyOK, jumpTo };
+  return { W, H, N, grid, goals, expand, cellOf, floorOK, bodyOK, jumpTo, locked };
 }
 
 // Binary min-heap of (distance, cell) pairs; stale entries are skipped by the caller.
@@ -640,6 +699,7 @@ function navSig(g, nextNum) {
   // Only the cells a solid covers matter (see navGraph), so animation frames
   // and sub-cell movement don't invalidate the field.
   for (const e of liftsOf(g)) if (e.links.length >= 3) s += liftRuns(e) ? ';L1' : ';L0'; // lifts waiting for a switch
+  s += `;P${lockedPushers(g).length}`; // pushers still blowing
   for (const x of g.solids) {
     if (x.e && NOT_WALL_AI.has(x.e.ai)) continue;
     const soft = isSoft(x.e);
@@ -650,18 +710,20 @@ function navSig(g, nextNum) {
 }
 
 function buildField(g, nextNum) {
-  const { N, grid, goals, expand } = navGraph(g, nextNum);
+  const { N, grid, goals, expand, cellOf, locked } = navGraph(g, nextNum);
   const field = new Float64Array(N).fill(Infinity);
   field.grid = grid;
+  field.locked = locked;
   // reversed edges as linked lists: head[to] -> edge -> next edge into `to`
   const head = new Int32Array(N).fill(-1);
-  const eFrom = [], eCost = [], eNext = [];
+  let eFrom = [], eCost = [], eNext = [];
   let cur = 0;
   const emit = (to, cost) => {
     eFrom.push(cur); eCost.push(cost); eNext.push(head[to]);
     head[to] = eFrom.length - 1;
   };
   for (cur = 0; cur < N; cur++) expand(cur, emit);
+  eFrom = Int32Array.from(eFrom); eCost = Float32Array.from(eCost); eNext = Int32Array.from(eNext); // kept with the field
   // shortest way back along the reversed moves, from wherever `dist` starts finite
   const solve = (dist) => {
     const heap = makeHeap();
@@ -693,6 +755,14 @@ function buildField(g, nextNum) {
   reach.grid = grid;
   field.reach = reach;
   field.flood = flood;
+  // walking distance to the nearest of some objects (used for switches)
+  field.walkTo = (objects) => {
+    const d = new Float64Array(N).fill(Infinity);
+    for (const o of objects) { const c = cellOf(o); if (c !== null) d[c] = 0; }
+    solve(d);
+    d.grid = grid;
+    return d;
+  };
   return field;
 }
 
@@ -768,7 +838,7 @@ function buildFlood(g, nextNum, targets = null) {
   return flood;
 }
 
-// The fields for a world state, most recently used first. Several are kept:
+// The fields for a world state, most recently used first. A dozen are kept:
 // runs start from different places (the level's start, each save station) and
 // every destroyed wall or opened door is a new state, but the same states come
 // round again and again, and solving one takes tens of milliseconds.
@@ -781,7 +851,7 @@ function useFields(g, nextNum) {
   if (fieldCache) fieldCaches.delete(sig); // re-inserted below as the newest
   else { fieldCache = { sig, field: buildField(g, nextNum), sw: new Map() }; navStats.builds++; }
   fieldCaches.set(sig, fieldCache);
-  if (fieldCaches.size > 48) fieldCaches.delete(fieldCaches.keys().next().value);
+  if (fieldCaches.size > 12) fieldCaches.delete(fieldCaches.keys().next().value); // each holds the level's whole move graph
 }
 // the lifts of the level as currently loaded (its objects are new on every load)
 let liftCache = { level: null, list: [] };
@@ -819,41 +889,43 @@ function readFlood(g, flood) {
   return Infinity;
 }
 
-// Switches the player works with the action key. Off (aistate 0) until used.
-const SWITCH_AI = new Set(['switcher_ai', 'switch_once_ai', 'switch_delay_ai']);
 
-// Open-space distance from the player to the nearest switch that is still
-// off, and which set of switches that was measured against (`key` changes
-// when one is pressed). Levels are gated by switches that the exit compass
-// knows nothing about (a lift that only runs once its switch is on, a door
-// opened from another room), so "go and find the switches" is a second
-// compass of its own.
+// Distance from the player to the nearest "key" still to be dealt with: a
+// switch that is off, or a creature whose death something is waiting on. Also
+// which set of keys that was measured against (`key` changes when one is
+// done). Levels are gated by things the exit compass knows nothing about (a
+// lift that only runs once its switch is on, a door opened from another room,
+// pushers that stop when a particular ant is dead), so "go and deal with the
+// keys" is a second compass of its own.
 export function switchDist(g) {
   // Always measured for the level's own next exit, whoever asks: the fields
   // are cached per (level state, exit), and asking with a different exit
   // would throw the cache away and rebuild it on every call.
   const nextNum = +(/(\d+)/.exec(g.level.name) || [0, 0])[1] + 1;
   useFields(g, nextNum);
-  let off = null, key = '';
-  for (const e of g.entities) {
-    if (e.dead || e.aistate !== 0 || !SWITCH_AI.has(e.ai)) continue;
-    (off ??= []).push(e);
-    key += `${e.id},`;
-  }
-  if (!off) return { dist: Infinity, key, nearest: null };
-  // one field per set of switches still off (kept: switches get pressed in the same few orders)
-  let swFlood = fieldCache.sw.get(key);
-  if (!swFlood) { swFlood = buildFlood(g, nextNum, off); fieldCache.sw.set(key, swFlood); if (fieldCache.sw.size > 16) fieldCache.sw.delete(fieldCache.sw.keys().next().value); }
-  const dist = readFlood(g, swFlood);
+  // (switches still off, and creatures a death sensor is waiting on)
+  let off = keysToGo(g), key = '';
+  for (const e of off) key += `${e.id},`;
+  if (!off.length) off = null;
+  if (!off) return { dist: Infinity, key: '', nearest: null, off: 0 };
+  // one pair of fields per set of switches still off (kept: switches get pressed in the same few orders)
+  let sw = fieldCache.sw.get(key);
+  if (!sw) { sw = { walk: fieldCache.field.walkTo(off), flood: buildFlood(g, nextNum, off) }; fieldCache.sw.set(key, sw); if (fieldCache.sw.size > 8) fieldCache.sw.delete(fieldCache.sw.keys().next().value); }
+  // by legal moves where a switch can be walked to; through open space otherwise
+  let dist = readWalk(g, sw.walk);
+  const walkable = dist !== Infinity;
+  if (!walkable) dist = readFlood(g, sw.flood);
   // the nearest in a straight line, for the agent's view
   const p = g.player;
   let nearest = null, bd = Infinity;
   for (const e of off) { const d = Math.abs(e.x - p.x) + Math.abs(e.y - p.y); if (d < bd) { bd = d; nearest = e; } }
-  return { dist, key, nearest };
+  return { dist, key: `${walkable ? 'w' : 'o'}${key}`, nearest, off: off.length };
 }
 
-// Offset that ranks every open-space reading behind every walking-route one.
+// Offsets that rank the kinds of reading: a walking route to the exit beats an
+// open-space one, which beats "still have switches to find".
 export const OPEN = 1e6;
+export const LOCKED = 2e6;
 
 // The distance the trainer steers by: the walking route to the exit where
 // there is one; otherwise (+OPEN) the "reach" distance, walking as near to the
@@ -863,6 +935,15 @@ export const OPEN = 1e6;
 export function exitDist(g, nextNum = null) {
   const walk = navDist(g, nextNum);
   if (walk !== Infinity) return walk;
+  // No walking route, and doors in the level that only switches will open:
+  // the way forward is the switches. Scored as "switches still off" first,
+  // then the distance to the nearest of them, so pressing one is a big step
+  // and walking towards the next is steady progress.
+  if (fieldCache.field.locked) {
+    const sw = switchDist(g);
+    if (sw.dist !== Infinity) return LOCKED + sw.off * 1000 + Math.min(sw.dist, 999);
+    useFields(g, nextNum); // (switchDist may have moved the cache to its own exit number)
+  }
   const reach = readWalk(g, fieldCache.field.reach);
   if (reach !== Infinity) return OPEN + reach;
   const open = floodDist(g, nextNum);
@@ -870,7 +951,9 @@ export function exitDist(g, nextNum = null) {
 }
 
 // For people: "12" along the walking route, "~340" through open space.
-export const fmtDist = (d) => (!isFinite(d) ? '?' : d >= OPEN ? `~${(d - OPEN).toFixed(0)}` : d.toFixed(0));
+export const fmtDist = (d) => (!isFinite(d) ? '?'
+  : d >= LOCKED ? `${Math.floor((d - LOCKED) / 1000)} switch(es) to go, ${((d - LOCKED) % 1000).toFixed(0)} to the next`
+  : d >= OPEN ? `~${(d - OPEN).toFixed(0)}` : d.toFixed(0));
 
 
 // Path distance (in cells) from the player to the nearest exit that advances
@@ -1058,7 +1141,8 @@ export function demoFile(campaign, rec) {
   const pieces = [];
   for (const leg of campaign.legs) for (const piece of leg.pieces) pieces.push({ ...piece, levelIdx: leg.level });
   if (rec && rec.levelIdx === campaign.frontier) for (const piece of rec.pieces) pieces.push({ ...piece, levelIdx: rec.levelIdx });
-  return { format: DEMO_FORMAT, savedAt: new Date().toISOString(), passed: campaign.legs.map((l) => l.level), frontier: campaign.frontier, pieces };
+  // `dist`: how far from the current level's exit the recording gets (see exitDist), for comparing recordings
+  return { format: DEMO_FORMAT, savedAt: new Date().toISOString(), passed: campaign.legs.map((l) => l.level), frontier: campaign.frontier, dist: rec && rec.levelIdx === campaign.frontier ? rec.dist : null, pieces };
 }
 
 // Everything recorded so far as one playthrough: the passed levels in order,
@@ -1573,6 +1657,8 @@ export class PpoTrainer {
     this.levelStartStep = this.episodeSteps;
     this.lastX = g.player.x;
     this.lastY = g.player.y;
+    this.areaX = g.player.x; this.areaY = g.player.y; this.areaStep = this.episodeSteps;
+    this.keyBaseline = true; // (see policyStep: death sensors already satisfied earn nothing)
     this.prevSw = Infinity; this.prevSwKey = null;
     this.prevHp = g.player.hp;
     this.prevOwned = g.player.owned.size;
@@ -1625,6 +1711,7 @@ export class PpoTrainer {
     this.g.bot = this.bot;
     this.g.nextLevel = this.trainExit;
     this.enterLevel();
+    if (from) this.paid.add(from.key); // no bonus for "using" the station the run starts at
     this.resetting = false;
   }
 
@@ -1814,8 +1901,10 @@ export class PpoTrainer {
     // or a new best distance. Merely moving about does not count: hopping on
     // the spot used to keep a run alive for its full ten minutes.
     this.epNoProg++;
-    if (this.epNoProg > STALL) { this.endEpisode(-3, true); return; }
-    if (this.episodeSteps - this.levelStartStep > 15 * 600 * 4) { this.endEpisode(-3, true); return; } // 600 sim-seconds per level
+    // the area it is in: re-centred whenever it gets AREA pixels away from the centre
+    if (Math.abs(p.x - this.areaX) > AREA || Math.abs(p.y - this.areaY) > AREA) { this.areaX = p.x; this.areaY = p.y; this.areaStep = this.episodeSteps; }
+    if (this.epNoProg > STALL_ROAMING || (this.epNoProg > STALL && this.episodeSteps - this.areaStep > STALL)) { this.endEpisode(-3, true); return; }
+    if (this.episodeSteps - this.levelStartStep > LEVEL_CAP) { this.endEpisode(-3, true); return; }
     this.inUpdate = true; // an exit reached inside this update ends the episode mid-step
     g.update(1 / 60);
     this.inUpdate = false;
@@ -1838,11 +1927,12 @@ export class PpoTrainer {
     // reward for the transition that just completed
     let r = -0.02; // step cost
     if (this.prevDist !== Infinity && isFinite(this.prevDist)) {
-      // crossing between the two distance scales is not progress either way
-      const gain = (this.prevDist >= OPEN) === fallback ? this.prevDist - effDist : 0;
+      // crossing between the kinds of reading is not progress either way
+      const tier = (d) => (d >= LOCKED ? 2 : d >= OPEN ? 1 : 0);
+      const gain = tier(this.prevDist) === tier(effDist) ? this.prevDist - effDist : 0;
       // Progress pays and retreat costs the same amount, so stepping back and
       // forth over a cell boundary nets zero instead of farming reward.
-      r += Math.max(-12, Math.min(12, gain * (fallback ? 3 : COMPASS)));
+      r += Math.max(-12, Math.min(12, gain * (effDist >= LOCKED ? COMPASS : fallback ? 3 : COMPASS)));
     }
     this.prevDist = effDist;
     const enemyCount = g.entities.filter((e) => !e.dead && e.shootable && ENEMY_AI.has(e.ai)).length;
@@ -1928,8 +2018,7 @@ export class PpoTrainer {
         // presses one and then saves has banked that progress: later runs
         // start there with the doors it opened still open.
         const list = loadStations(this.levelIdx);
-        let sw = 0;
-        for (const e of g.entities) if (!e.dead && e.aistate !== 0 && SWITCH_AI.has(e.ai)) sw++;
+        const sw = keysDone(g);
         const old = list.find((st) => st.key === key);
         if (!p.dead && (!old || sw > (old.sw || 0))) {
           const st = { key, sw, x: Math.round(p.x), y: Math.round(p.y), state: snapshotState(g), pieces: this.piecesSoFar(this.recActs.length, this.simSteps) };
@@ -1939,19 +2028,26 @@ export class PpoTrainer {
         }
       }
     }
+    // Death sensors that were already satisfied when the run began, or that
+    // watch nothing, are not this run's doing.
+    if (this.keyBaseline) {
+      this.keyBaseline = false;
+      for (const e of g.entities) if (e.ai === 'death_sen_ai' && (e.aistate !== 0 || !e.links.length)) this.paid.add(e);
+    }
     // Switches: turning one on pays, once per switch per run, and so does
     // getting closer to the nearest one that is still off. A step where the
     // set of off switches changed is skipped: the distance then jumps to a
     // different switch, which is not movement.
     {
       for (const e of g.entities) {
-        if (e.dead || e.aistate === 0 || !SWITCH_AI.has(e.ai) || this.paid.has(e)) continue;
+        if (e.dead || e.aistate === 0 || this.paid.has(e) || !(SWITCH_AI.has(e.ai) || e.ai === 'death_sen_ai')) continue; // a switch turned on, or a watched creature killed
         this.paid.add(e);
         r += SWITCH_ON;
         this.epNoProg = 0; // the level has changed: worth staying alive for
       }
       const sw = switchDist(g);
-      if (sw.key === this.prevSwKey && isFinite(sw.dist) && isFinite(this.prevSw)) {
+      // (when the switches ARE the way forward, the main compass above already follows them)
+      if (effDist < LOCKED && sw.key === this.prevSwKey && isFinite(sw.dist) && isFinite(this.prevSw)) {
         r += Math.max(-6, Math.min(6, (this.prevSw - sw.dist) * SWITCH_PULL));
       }
       this.prevSw = sw.dist; this.prevSwKey = sw.key;

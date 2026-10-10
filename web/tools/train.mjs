@@ -21,8 +21,17 @@
 //                           into the page with "Load training file".
 //   <out>/report.txt        how far it got and where its runs end.
 //
+//   --new-policy   resume the levels passed and save stations, but start the
+//                  network and the exploration counts from scratch. For when
+//                  the rewards or compass have changed and the old policy's
+//                  habits are in the way.
+//
 //   node web/tools/train.mjs --export    rewrites web/data/ppo-demo.json from
 //                                        <out>/ppo.json without training.
+//
+// web/data/ppo-demo.json is only ever replaced by a recording that gets
+// further (a later level, or closer to the exit of the same one), so a new or
+// --fresh run cannot wipe out the best one. --export --force overrides that.
 import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { availableParallelism } from 'node:os';
@@ -36,11 +45,22 @@ const levelOfRec = (rec) => (rec ? (rec.levelIdx ?? LEVELS.indexOf(rec.level)) :
 const DEMO_FILE = fileURLToPath(new URL('../data/ppo-demo.json', import.meta.url));
 
 // The demo recording, from a saved store (the campaign plus the best run on the current level).
-async function writeDemo(store) {
+async function writeDemo(store, force = false) {
   const campaign = store[CAMPAIGN_KEY] ? JSON.parse(store[CAMPAIGN_KEY]) : { frontier: 0, entry: null, legs: [] };
   const rec = store[BEST_KEY] ? JSON.parse(store[BEST_KEY]) : null;
   const demo = ppo.demoFile(campaign, rec);
   if (!demo.pieces.length) return null; // nothing recorded yet: leave any existing demo alone
+  // The demo file is the best playthrough on record and is committed with the
+  // site, so it is only ever replaced by a better one: further through the
+  // game, or closer to the exit of the same level. A new or --fresh run that
+  // has not got as far leaves it alone.
+  let old = null;
+  try { old = JSON.parse(await readFile(DEMO_FILE, 'utf8')); } catch { /* no demo yet */ }
+  if (old && Array.isArray(old.pieces) && old.pieces.length && !force) {
+    const further = demo.frontier > old.frontier;
+    const closer = demo.frontier === old.frontier && (old.dist == null || (demo.dist != null && demo.dist < old.dist));
+    if (!further && !closer) return { ...old, kept: true };
+  }
   await writeFile(DEMO_FILE, JSON.stringify(demo));
   return demo;
 }
@@ -116,14 +136,17 @@ async function main() {
   await mkdir(outDir, { recursive: true });
   const outFile = path.join(outDir, 'ppo.json');
   if (process.argv.includes('--export')) {
-    const demo = await writeDemo(JSON.parse(await readFile(outFile, 'utf8')).store);
-    console.log(demo ? `wrote ${DEMO_FILE}: levels passed ${demo.passed.join(', ') || 'none'}, now on level ${demo.frontier}, ${demo.pieces.length} piece(s)` : 'nothing recorded in that training file');
+    const demo = await writeDemo(JSON.parse(await readFile(outFile, 'utf8')).store, process.argv.includes('--force'));
+    console.log(!demo ? 'nothing recorded in that training file'
+      : demo.kept ? `kept ${DEMO_FILE} as it is: it already gets further (level ${demo.frontier}). Add --force to replace it anyway.`
+        : `wrote ${DEMO_FILE}: levels passed ${demo.passed.join(', ') || 'none'}, now on level ${demo.frontier}, ${demo.pieces.length} piece(s)`);
     return;
   }
 
   // resume
   let seedStore = {};
   if (!fresh) { try { seedStore = JSON.parse(await readFile(outFile, 'utf8')).store || {}; } catch { /* nothing to resume */ } }
+  if (process.argv.includes('--new-policy')) for (const k of [PPO_KEY, VISITS_KEY, BEST_KEY, HIST_KEY]) delete seedStore[k];
   for (const [k, v] of Object.entries(seedStore)) if (v != null) localStorage.setItem(k, v);
   const net = new ppo.Net();
   const resumed = net.load();
@@ -140,7 +163,7 @@ async function main() {
   const ends = new Map();       // "level|cellx|celly|how" -> count: where runs end
   const reached = new Map();    // level -> runs that got there
 
-  console.log(`training on ${nWorkers} workers for ${minutes} min (${resumed ? 'resuming' : 'fresh'}) -> ${outFile}`);
+  console.log(`training on ${nWorkers} workers for ${minutes} min (${resumed ? 'resuming' : campaign ? 'new policy, levels passed kept' : 'fresh'}) -> ${outFile}`);
   const workers = [];
   let pending = new Map(); // worker id -> its update, until all have reported
   let stopping = false;
