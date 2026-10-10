@@ -1193,7 +1193,79 @@ function nextLevelTop(e, g) {
 // (game.js builds this.ladders from these entities); nothing to run per tick.
 const ladder = () => true;
 
+// BOSS_ANT — ant.lsp boss_ai. It hides, taunts, fades in facing the player,
+// fires twice, fades out and reappears at one of its linked spots, over and
+// over. It can only be hurt while fully faded in (boss_damage, in
+// game.damage): each time its health is gone it becomes the next alien type
+// (a new colour and a new weapon, 0 to 5), and the sixth time it blows up.
+function bossFire(e, g) {
+  const p = g.player;
+  const fx = e.x + e.dir * 17, fy = e.y - 25;
+  const tx = p.x + (p.vx / 15) * 8, ty = p.y - 15 + (p.vy / 15) * 2;
+  if (!g.sees(e.x, e.y - 1, fx, fy) || !g.sees(fx, fy, tx, ty)) return;
+  let angle = Math.atan2(fy - ty, tx - fx) * 180 / Math.PI;
+  if (angle < 0) angle += 360;
+  enemyFire(g, e.aitype, fx, fy, angle);
+  e.setState('weapon_fire');
+}
+function boss(e, g) {
+  const a = e.a;
+  if (a.taunt === undefined) a.taunt = e.lv?.taunt_time ?? 20; // boss_cons: 20, or what the level saved
+  switch (e.aistate) {
+    case 0: // wait to be turned on
+      e.setState('hiding'); e.hidden = true;
+      if (activated(e)) e.aistate = 1;
+      break;
+    case 1: // taunt for a while
+      e.hidden = true;
+      if (a.taunt === 0) { e.fade = 14; e.setState('stopped'); g.sound('amb16', e.x, e.y); e.aistate = 2; } else {
+        a.taunt--;
+        if (a.taunt % 25 === 0) g.sound('amb07', e.x, e.y);
+      }
+      break;
+    case 2: // fade in
+      e.hidden = false;
+      e.dir = g.player.x >= e.x ? 1 : -1;
+      if (e.fade === 0) { e.setState('weapon_fire'); goState(e, 3); } else e.fade = Math.max(0, e.fade - 2);
+      break;
+    case 3: if (!e.nextPicture()) goState(e, 4); break; // wait to fire
+    case 4: bossFire(e, g); e.aistate = 5; e.setState('weapon_fire'); break;
+    case 5: if (!e.nextPicture()) goState(e, 6); break;
+    case 6: bossFire(e, g); e.aistate = 7; e.setState('stopped'); break;
+    case 7: // fade out, then turn up somewhere else
+      e.fade += 2;
+      if (e.fade >= 14) {
+        e.fade = 14;
+        e.setState('hiding'); e.hidden = true;
+        const to = e.links[g.rand(e.links.length)];
+        if (to) { e.x = to.x; e.y = to.y; }
+        a.taunt = 30 - e.aitype * 2;
+        goState(e, 0);
+      }
+      break;
+    case 10: // beaten: a minute of explosions spreading out from where it stood
+      e.setState('hiding'); e.hidden = true;
+      if (e.stateTime >= 60) { goState(e, 11); break; }
+      if (e.stateTime % 8 === 0) g.sound('grenad01', e.x, e.y);
+      g.effect('EXPLODE1', e.x + g.rand(e.stateTime * 2 || 1), e.y + g.rand(e.stateTime || 1));
+      g.effect('EXPLODE1', e.x - g.rand(e.stateTime * 2 || 1), e.y - g.rand(e.stateTime || 1));
+      break;
+    default: return false; // 11: gone (which is what its death sensor is waiting for)
+  }
+  return true;
+}
+
+// END_GAME — startup.lsp end_game_ai: once its switch is on it counts eight
+// ticks, runs its animation through (the pipe closing), and ends the game.
+function endGame(e, g) {
+  if (!activated(e)) return true;
+  if (e.aistate === 8) { if (!e.nextPicture()) g.endGame(); } else e.aistate++;
+  return true;
+}
+
 export const behaviors = {
+  boss_ai: boss,
+  end_game_ai: endGame,
   ant_ai: ant,
   flyer_ai: flyer,
   track_ai: trackGun,

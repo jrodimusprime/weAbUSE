@@ -38,7 +38,7 @@ const SOURCE_AI = new Set([...SWITCH_AI, 'sensor_ai', 'death_sen_ai']);
 const triggerLink = (e) => (e.ai === 'platform_ai' ? e.links[2] : e.links[0]);
 // Puzzle pieces, as opposed to creatures and scenery that a trigger merely wakes.
 // Behaviours whose first link is not something they listen to (the original's code never reads its state).
-const DEAF_AI = new Set(['hp_up', 'tp2_ai', 'health_power_ai', 'fly_power_ai', 'fast_power_ai', 'sneaky_power_ai', 'next_level_ai', 'latter_ai', 'marker_ai']);
+const DEAF_AI = new Set(['end_game_ai', 'hp_up', 'tp2_ai', 'health_power_ai', 'fly_power_ai', 'fast_power_ai', 'sneaky_power_ai', 'next_level_ai', 'latter_ai', 'marker_ai']);
 const PUZZLE_AI = new Set(['sdoor_ai', 'strap_door_ai', 'ff_ai', 'hwall_ai', 'big_wall_ai', 'platform_ai', 'pusher_ai', 'switch_mover_ai', 'mover_ai', 'tp_door_ai', 'lightin_ai']);
 
 const g = await makeGame(LEVELS[0]);
@@ -53,6 +53,7 @@ async function load(i) {
   g.god = true;
   exitHit = null;
   g.nextLevel = (n) => { exitHit = n ?? true; };
+  g.onEndGame = () => { exitHit = 'the ending'; };
 }
 
 // Runs the game with the player held at (x, y), camera on them.
@@ -180,7 +181,7 @@ for (let lv = 0; lv < LEVELS.length; lv++) {
   for (const e of g.entities) {
     if (e.ai === 'platform_ai' && e.links.length >= 2) lifts.push(e.id);
     if (e.ai === 'tp2_ai' && e.links.length) teles.push(e.id);
-    if (e.ai === 'next_level_ai') exits.push(e.id);
+    if (e.ai === 'next_level_ai' || e.ai === 'end_game_ai') exits.push(e.id);
     if (GATE_AI.has(e.ai) || SOURCE_AI.has(e.ai) || DEAF_AI.has(e.ai)) continue;
     const t = triggerLink(e);
     if (!t) continue;
@@ -308,6 +309,13 @@ for (let lv = 0; lv < LEVELS.length; lv++) {
   for (const id of exits) {
     await load(lv);
     const e = ent(id);
+    if (e.ai === 'end_game_ai') {
+      // the last level ends when the switch behind this is on and its animation has run
+      for (const s of sources(e.links[0])) work(s.id);
+      for (let t = 0; t < 200 && exitHit === null; t += 5) hold(e.x, e.y, 5);
+      add('exit', exitHit !== null ? 'pass' : 'fail', `${name(e)}${exitHit !== null ? ' -> the ending' : ': working its switch does not end the game'}`);
+      continue;
+    }
     hold(e.x, e.y, 3, ['ArrowDown']);
     add('exit', exitHit !== null ? 'pass' : 'fail', `${name(e)}${exitHit !== null ? ` -> level ${exitHit}` : ': action key does not leave the level'}`);
   }

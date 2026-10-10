@@ -17,7 +17,7 @@
 //   node web/tools/search.mjs --levels 3       stop after passing this many more levels
 //   node web/tools/search.mjs --seed 7         a different run of the dice
 //   node web/tools/search.mjs --parallel       every remaining level at once, each in its own process
-//                                              (--jobs 6 at a time, --upto 20 the last level to try)
+//                                              (--jobs 6 at a time, --upto 21 the last level to try)
 //
 // Writes train-out/search.json (progress; resumed from) and
 // web/data/ppo-demo.json (what "Full game demo" plays).
@@ -79,7 +79,7 @@ const ENEMY_NEAR = 260;
 let climb = 0; // set by randomAct: how long to hold a climb, in decisions
 function enemyNear() {
   const p = g.player;
-  for (const e of g.entities) if (!e.dead && e.shootable && !e.hidden && e.hp > 0 && Math.abs(e.x - p.x) < ENEMY_NEAR && Math.abs(e.y - p.y) < 180 && e.def.name !== 'DARNEL' && /ant|fly|gun|jug|bomb|rob|who/i.test(e.ai || '')) return true;
+  for (const e of g.entities) if (!e.dead && e.shootable && !e.hidden && e.hp > 0 && Math.abs(e.x - p.x) < ENEMY_NEAR && Math.abs(e.y - p.y) < 180 && e.def.name !== 'DARNEL' && /ant|fly|gun|jug|bomb|rob|who|boss/i.test(e.ai || '')) return true;
   return false;
 }
 // A random action, leaning the way a player does: mostly on the move, the
@@ -105,6 +105,7 @@ function randomAct(dirBias) {
 // ---- one level ----
 let exitDest = null;
 g.nextLevel = (n) => { exitDest = n; g.transitioning = true; };
+g.onEndGame = () => { exitDest = LEVELS.length; }; // the last level's "exit" is the ending
 
 const wallsLeft = () => { let n = 0; for (const e of g.entities) if (!e.dead && (e.ai === 'hwall_ai' || e.ai === 'big_wall_ai' || e.ai === 'block_ai')) n++; return n; };
 function cellKey() {
@@ -326,14 +327,13 @@ if (process.argv.includes('--recheck')) {
 }
 
 // ---- many levels at once ----
-//   node web/tools/search.mjs --parallel [--jobs 6] [--per-level 30] [--upto 20]
-// Every level up to --upto (default 20: the last level cannot be finished
-// until its boss and ending are ported) that has no route yet is searched in
-// a process of its own.
+//   node web/tools/search.mjs --parallel [--jobs 6] [--per-level 30] [--upto 21]
+// Every level up to --upto (default 21, the last) that has no route yet is
+// searched in a process of its own.
 if (process.argv.includes('--parallel')) {
   const { spawn } = await import('node:child_process');
   const { openSync } = await import('node:fs');
-  const jobs = +arg('jobs', 6), upto = +arg('upto', 20);
+  const jobs = +arg('jobs', 6), upto = +arg('upto', 21);
   const todo = [];
   for (let lv = 0; lv <= upto; lv++) {
     let done = state.legs.some((l) => l.level === lv);

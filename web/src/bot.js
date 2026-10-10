@@ -20,7 +20,7 @@
 // reactive wandering until the map opens up and a path appears.
 
 const ENEMY_AI = new Set([
-  'ant_ai', 'flyer_ai', 'track_ai', 'spray_gun_ai', 'jug_ai',
+  'ant_ai', 'flyer_ai', 'track_ai', 'spray_gun_ai', 'jug_ai', 'boss_ai',
   'crack_ai', 'lightin_ai', 'bolder_ai', 'air_mine_ai', 'mine_ai',
 ]);
 

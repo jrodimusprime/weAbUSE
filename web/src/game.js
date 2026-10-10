@@ -39,6 +39,9 @@ const EXTRA_DEFS = [
 const MIDDLE_DRAW = new Set(['exp_draw', 'middle_draw']);
 // startup.lsp: (load_big_font "art/fonts.spe" "screen11"), (load_small_font "art/fonts.spe" "small_font")
 const FONT_FILE = 'art/fonts.spe';
+const END_FILE = 'art/fore/endgame.spe';
+// english.lsp plot_end
+const PLOT_END = "You've survived impossible odds and made it to the Control Room.  By pulling the switch, you have diverted the water supply and stopped the spread of Abuse!\nCONGRATULATIONS!  YOU'RE HOWLING!!!";
 const POWER_STATES = new Set(['stopped', 'running', 'start_run_jump', 'run_jump', 'run_jump_fall', 'end_run_jump']);
 const POWER_ICON = { FAST: 'fast_image', FLY: 'fly_image', SNEAKY: 'sneaky_image', HEALTH: 'b_check_image' };
 
@@ -92,6 +95,7 @@ export class Game {
         if (e.code === 'Escape') this.onDemoStop?.();
         return;
       }
+      if (this.ended) { this.leaveEnding(); e.preventDefault(); return; }
       this.keys.add(e.code);
       if (e.code.startsWith('Arrow') || e.code === 'Space') e.preventDefault();
       if (e.code === 'KeyG' && !e.repeat) this.setGod(!this.god);
@@ -107,7 +111,7 @@ export class Game {
       const b = canvas.getBoundingClientRect();
       this.mouse = { x: ((e.clientX - b.left) / b.width) * VIEW_W, y: ((e.clientY - b.top) / b.height) * VIEW_H };
     });
-    canvas.addEventListener('mousedown', (e) => { if (e.button === 0) this.mouseDown = true; if (e.button === 2) this.rightDown = true; });
+    canvas.addEventListener('mousedown', (e) => { if (this.ended) { this.leaveEnding(); return; } if (e.button === 0) this.mouseDown = true; if (e.button === 2) this.rightDown = true; });
     addEventListener('mouseup', () => { this.mouseDown = false; this.rightDown = false; });
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     canvas.addEventListener('wheel', (e) => {
@@ -124,6 +128,7 @@ export class Game {
   async init() {
     await this.assets.init();
     await this.assets.preloadDef({ file: FONT_FILE }); // the game's own bitmap fonts
+    await this.assets.preloadDef({ file: END_FILE }); // the picture behind the ending
     this.r.setPalette(this.assets.palette);
     const t = this.assets.foreTile(1) || this.assets.foreTile(0);
     this.tw = t.w;
@@ -529,6 +534,20 @@ export class Game {
     // no damage until that something is on (and then it blows by itself). Only
     // unwired walls can be shot down.
     if ((e.ai === 'hwall_ai' || e.ai === 'big_wall_ai') && e.links.length && e.links[0].aistate === 0) return;
+    // ant.lsp boss_damage: only while it is fully there, awake and not yet
+    // beaten; when its health is gone it becomes the next alien type instead
+    // of dying, and after the sixth it starts to blow up.
+    if (e.ai === 'boss_ai') {
+      if (e.fade !== 0 || e.aistate === 0 || e.aitype >= 6) return;
+      e.hp -= amount;
+      if (e.hp <= 0) {
+        e.hp = 1;
+        e.aitype++;
+        e.aistate = e.aitype === 6 ? 10 : 5;
+        e.stateTime = 0;
+      }
+      return;
+    }
     if (e.type === 'SWITCH_BALL') {
       if (e.state === 'stopped') { e.aistate = 1; e.setState('running'); this.sound('switch', e.x, e.y); }
       return;
@@ -635,9 +654,42 @@ export class Game {
   }
 
   // ---- simulation ----
+  // The game is won (endgame.cpp show_end): the end picture, with the closing
+  // text scrolling up over it one pixel every 0.18 s. A key or a click after
+  // that goes back to the first level. Scripted runs (the demo, the search)
+  // are told instead, through onEndGame.
+  endGame() {
+    if (this.ended) return;
+    if (this.onEndGame) { this.onEndGame(); return; }
+    this.ended = { at: performance.now() };
+    this.keys.clear(); this.mouseDown = false; this.rightDown = false;
+  }
+
+  leaveEnding() {
+    if (!this.ended || performance.now() - this.ended.at < 1500) return;
+    this.ended = null;
+    this.start('level00.spe');
+  }
+
+  drawEnding() {
+    const r = this.r;
+    r.begin();
+    r.setLit(false);
+    const im = this.assets.sprite(END_FILE, 'end.pcx');
+    if (im) r.draw(im, 0, 0, { opaque: true });
+    const lines = PLOT_END.split('\n').flatMap((para) => this.wrapText(para, 'screen11', VIEW_W - 20));
+    const lh = this.fontCell('screen11').h + 1;
+    const scrolled = Math.min(320, Math.floor((performance.now() - this.ended.at) / 180));
+    lines.forEach((line, i) => {
+      const y = 205 - scrolled + i * lh;
+      if (y > -lh && y < VIEW_H) this.drawText(line, 10, y, this.colors.white, 'screen11');
+    });
+    r.flush();
+  }
+
   update(dt) {
     const p = this.player;
-    if (!p || !this.level) return;
+    if (!p || !this.level || this.ended) return;
     if (this.bot) this.bot.step(this);
     this.updatePlayer(dt);
     this.tickAcc += dt;
@@ -981,6 +1033,7 @@ export class Game {
   render() {
     const lv = this.level;
     if (!lv) return;
+    if (this.ended) { this.drawEnding(); return; }
     const r = this.r;
     const cx = Math.floor(this.cam.x), cy = Math.floor(this.cam.y);
     const alpha = Math.min(1, this.tickAcc / TICK);
@@ -1017,6 +1070,8 @@ export class Game {
       if (x < cx - 160 || x > cx + VIEW_W + 160 || y < cy - 80 || y > cy + VIEW_H + 200) continue;
       if (isHiddenInPlay(e.def)) continue;
       if (e.ai === 'tele_beam_ai' && e.fade < 8 && (this.tickCount & 1)) continue;
+      // the boss fading in or out (drawn translucent in the original): it flickers, more absent the more it has faded
+      if (e.ai === 'boss_ai' && e.fade > 0 && (this.tickCount * 5 + e.id) % 14 < e.fade) continue;
       if (MIDDLE_DRAW.has(e.def.funs.get('draw_fun'))) { fx.push([e, x, y]); continue; }
       this.blit(e.def, e.state, e.frame, x, y, e.dir, false, this.assets.tintFor(e));
       if (e.a.beam) this.drawBeam(e);

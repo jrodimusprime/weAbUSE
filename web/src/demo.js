@@ -31,6 +31,7 @@ export function stopDemo() {
   g.mouseDown = false;
   g.rightDown = false;
   g.nextLevel = a.oldNextLevel;
+  g.onEndGame = a.oldOnEndGame;
   g.onLevel = a.oldOnLevel;
   g.onDemoStop = null;
   a.select.disabled = false;
@@ -78,6 +79,9 @@ function playPieces(game, btn, select, pieces) {
   };
   // An exit ends the piece it is in; the next piece starts the next level.
   game.nextLevel = () => { game.transitioning = true; exited = true; };
+  // (the ending, reached in a recording, ends its piece like an exit; the real ending is shown when the demo stops)
+  mine.oldOnEndGame = game.onEndGame;
+  game.onEndGame = () => { exited = true; };
   const next = () => {
     if (active !== mine) return;
     if (++k >= pieces.length) { finish(`Demo finished on level ${pieces[pieces.length - 1].levelIdx}: that is as far as the recording goes`); return; }
