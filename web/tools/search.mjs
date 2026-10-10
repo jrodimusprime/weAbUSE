@@ -23,6 +23,7 @@
 // web/data/ppo-demo.json (what "Full game demo" plays).
 import { mkdir, readFile, writeFile, copyFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { deflateRawSync, inflateRawSync } from 'node:zlib';
 import { makeGame, LEVELS } from './headless.mjs';
 
 const arg = (name, dflt) => { const i = process.argv.indexOf(`--${name}`); return i >= 0 ? process.argv[i + 1] : dflt; };
@@ -53,13 +54,17 @@ function sameEnt(a, b) {
   for (let i = 0; i < a.links.length; i++) if (a.links[i] !== b.links[i]) return false;
   return true;
 }
+// (and kept compressed, outside the JavaScript heap: a busy level has tens of
+// thousands of cells, each with every object that has so much as changed its
+// animation frame, which is more than the heap will hold as plain objects)
 function pack(snap, base) {
   const es = {}, gone = [];
   for (const id in snap.es) if (!base.es[id] || !sameEnt(snap.es[id], base.es[id])) es[id] = snap.es[id];
   for (const id in base.es) if (!snap.es[id]) gone.push(id);
-  return { ...snap, es, gone };
+  return deflateRawSync(JSON.stringify({ ...snap, es, gone }), { level: 1 });
 }
-function unpack(packed, base) {
+function unpack(buf, base) {
+  const packed = JSON.parse(inflateRawSync(buf).toString());
   const es = { ...base.es };
   for (const id of packed.gone) delete es[id];
   Object.assign(es, packed.es);
