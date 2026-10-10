@@ -900,7 +900,16 @@ export class Game {
     const p = this.player;
     const l = Math.floor(p.x - HALF_W), r = Math.floor(p.x + HALF_W), top = Math.floor(p.y - BODY_H), yy = Math.floor(p.y);
     this.around.clear();
-    for (const s of this.solids) if (r >= s.x0 && l <= s.x1 && yy - 1 >= s.y0 && top <= s.y1) this.around.add(s.e);
+    for (const s of this.solids) {
+      if (!(r >= s.x0 && l <= s.x1 && yy - 1 >= s.y0 && top <= s.y1)) continue;
+      // Stepping off the top of a ladder that comes up through a closed
+      // trap door leaves the climber a pixel or two into the door's top
+      // edge: they are standing on the door, not inside it, and must not
+      // drop back through. (Only then: a rider whose lift sinks past the lip
+      // of something beside it goes on down with the lift.)
+      if (p.ladderExit && yy - s.y0 <= 6 && !p.climbing && p.vy >= 0) { p.y = s.y0; p.vy = 0; p.ground = true; continue; }
+      this.around.add(s.e);
+    }
     return this.around.size ? this.around : null;
   }
 
