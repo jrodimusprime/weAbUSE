@@ -51,15 +51,17 @@ pauseBtn.addEventListener('click', () => {
   refreshPauseBtn();
 });
 
-// Full game demo: the playthrough recorded by training, every level passed so
-// far and then the best progress on the current one. It plays the recording
-// committed with the site (data/ppo-demo.json, written by tools/train.mjs);
-// without one, whatever this browser has trained itself.
+// Demo: the recorded playthrough committed with the site (data/ppo-demo.json,
+// found by tools/search.mjs), every level passed so far, in order.
 const describeDemo = async () => {
   const file = await loadDemoFile();
   const passed = file ? file.passed.length : loadCampaign().legs.length;
   const on = file ? file.frontier : loadCampaign().frontier;
-  if (!fullGameBtn.classList.contains('on')) fullGameBtn.textContent = `Full game demo (${passed} level${passed === 1 ? '' : 's'} passed, now on level ${on})`;
+  void on;
+  const levels = file ? file.passed : loadCampaign().legs.map((l) => l.level);
+  if (!fullGameBtn.classList.contains('on')) {
+    fullGameBtn.textContent = !passed ? 'Demo' : passed === 1 ? `Demo (level ${levels[0]})` : `Demo (levels ${levels[0]} to ${levels[levels.length - 1]})`;
+  }
 };
 describeDemo();
 fullGameBtn.addEventListener('click', async () => {

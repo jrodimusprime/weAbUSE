@@ -1,4 +1,4 @@
-// Full game demo: plays back what PPO training recorded.
+// Demo: plays back a recorded playthrough.
 //
 // A recording is a list of pieces. Each piece is the state it started from
 // (or the level's own fresh start), the action taken at each decision and how
@@ -6,9 +6,9 @@
 // game plays it out identically. Consecutive pieces join up exactly, so a list
 // of them is one continuous playthrough, across level changes too.
 //
-// The recording comes from data/ppo-demo.json, which the headless trainer
-// (tools/train.mjs) writes: the result of local training, committed with the
-// site. Without that file, whatever this browser has trained itself is played.
+// The recording comes from data/ppo-demo.json, committed with the site: the
+// route tools/search.mjs found through each level. (The PPO trainer writes
+// the same format; without the file, whatever this browser trained is played.)
 
 import { applyAction, actParts, startRun, decodeActs, campaignPieces, DEMO_FORMAT } from './ppo.js';
 import { DATA } from './assets.js';
@@ -68,7 +68,7 @@ function playPieces(game, btn, select, pieces) {
   game.speed = 2;
   game.demoTimeoutTicks = 0;
   game.onDemoStop = () => stopDemo();
-  game.onLevel = (name) => { mine.oldOnLevel?.(name); if (active === mine) game.toast(`Full game demo (2x): ${name}`); };
+  game.onLevel = (name) => { mine.oldOnLevel?.(name); if (active === mine) game.toast(`Demo (2x): ${name}`); };
   let k = -1, exited = false;
   const finish = (text) => {
     if (active !== mine) return;
@@ -80,7 +80,7 @@ function playPieces(game, btn, select, pieces) {
   game.nextLevel = () => { game.transitioning = true; exited = true; };
   const next = () => {
     if (active !== mine) return;
-    if (++k >= pieces.length) { finish(`Demo finished on level ${pieces[pieces.length - 1].levelIdx}: that is as far as training has got`); return; }
+    if (++k >= pieces.length) { finish(`Demo finished on level ${pieces[pieces.length - 1].levelIdx}: that is as far as the recording goes`); return; }
     const piece = pieces[k];
     exited = false;
     game.hold = true; // no steps until the piece is set up exactly as it was recorded
@@ -114,7 +114,7 @@ export async function toggleFullGameDemo(game, btn, select) {
   if (active) { stopDemo(); return; }
   const file = await loadDemoFile();
   const pieces = file ? file.pieces : campaignPieces();
-  if (!pieces.length) { game.toast('Nothing recorded yet — train first'); return; }
+  if (!pieces.length) { game.toast('No demo recording yet'); return; }
   if (active) return; // started twice while the file loaded
   playPieces(game, btn, select, pieces);
 }

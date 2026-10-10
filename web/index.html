@@ -12,6 +12,7 @@
     #bar { padding: 6px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; justify-content: center; }
     select, button { font: inherit; }
     button.on { background: #7a1f1f; color: #fff; }
+    [hidden] { display: none !important; }
     body.touch { -webkit-user-select: none; user-select: none; -webkit-tap-highlight-color: transparent; }
     body.touch #help { display: none; }
     body.touch #c { touch-action: none; }
@@ -54,18 +55,21 @@
       <label>Level <select id="level"></select></label>
       <button id="god" type="button">God mode: off</button>
       <button id="coords" type="button">Show coordinates</button>
-      <button id="ppo" type="button">Train PPO</button>
-      <button id="pause" type="button" disabled>Pause</button>
-      <label>Show the latest attempt every <select id="showEvery">
-        <option value="10">10</option><option value="25">25</option><option value="50" selected>50</option>
-        <option value="100">100</option><option value="0">never</option>
-      </select> updates</label>
-      <button id="fullGame" type="button">Full game demo</button>
-      <button id="loadTrain" type="button">Load training file</button>
-      <input id="loadTrainFile" type="file" accept=".json,application/json" hidden>
-      <button id="forget" type="button">Forget training</button>
+      <button id="fullGame" type="button">Demo</button>
+      <!-- The PPO trainer's controls: out of sight for now (the demo is made by tools/search.mjs). Remove "hidden" to bring them back. -->
+      <span id="ppoControls" hidden>
+        <button id="ppo" type="button">Train PPO</button>
+        <button id="pause" type="button" disabled>Pause</button>
+        <label>Show the latest attempt every <select id="showEvery">
+          <option value="10">10</option><option value="25">25</option><option value="50" selected>50</option>
+          <option value="100">100</option><option value="0">never</option>
+        </select> updates</label>
+        <button id="loadTrain" type="button">Load training file</button>
+        <input id="loadTrainFile" type="file" accept=".json,application/json" hidden>
+        <button id="forget" type="button">Forget training</button>
+        <span id="ppoStatus"></span>
+      </span>
       <span id="hud"></span>
-      <span id="ppoStatus"></span>
     </div>
     <div id="help">arrows/WASD move, Space/Up jump, Down/E use switch, mouse aim, click/F fire, 1-7 or wheel weapons, right mouse special power, L lights, G god mode</div>
   </div>
