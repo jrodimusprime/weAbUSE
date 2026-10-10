@@ -127,7 +127,11 @@ async function searchLevel(lv, entry, deadline) {
   const level0 = ppo.snapshotState(g); // what saved states are stored against
   const cells = new Map();
   const list = [];
-  const root = { key: cellKey(), snap: null, full: entry, parent: null, acts: '', pieceSteps: 0, steps: 0, hp: g.player.hp, dist: ppo.exitDist(g, next), chosen: 0, born: 0 };
+  // (The start itself is given no compass reading. Before the first tick the
+  // level's force fields have not put up their beams, so the compass sees a
+  // clear run to the exit that is not there, and nothing found afterwards
+  // could ever look better than that.)
+  const root = { key: cellKey(), snap: null, full: entry, parent: null, acts: '', pieceSteps: 0, steps: 0, hp: g.player.hp, dist: Infinity, chosen: 0, born: 0 };
   cells.set(root.key, root); list.push(root);
   let iter = 0, simSteps = 0, bestDist = root.dist, bestCell = root, lastPrint = Date.now(), deaths = 0;
   const t0 = Date.now();
@@ -266,26 +270,67 @@ const failedLine = (lv, r) => `level ${nn(lv)}: NOT passed in ${(r.ms / 60000).t
 // with what the player carried out of the level before.)
 if (process.argv.includes('--only')) {
   const lv = +arg('only');
-  const carried = lv === state.frontier && lv > 0;
+  const carried = lv === state.frontier && lv > 0 && state.legs.some((l) => l.level === lv - 1);
   const r = await searchLevel(lv, carried ? state.entry : null, Date.now() + PER_LEVEL);
   await writeFile(levelFile(lv), JSON.stringify({ level: lv, solved: r.solved, carried, pieces: r.pieces, ms: r.ms, iter: r.iter, cells: r.cells, dist: r.dist ?? null, at: r.at ?? null }));
   console.log(r.solved ? passedLine(lv, r) : failedLine(lv, r));
   process.exit(0);
 }
 
+// ---- after the game's code has changed ----
+//   node web/tools/search.mjs --recheck
+// A route is only good for the game it was found in: any change to how the
+// game plays can make it drift. This replays every route exactly as the demo
+// does and throws away the ones that no longer join up and reach their exit,
+// so that --parallel searches those levels again.
+async function replays(lv, pieces) {
+  for (let k = 0; k < pieces.length; k++) {
+    const piece = pieces[k];
+    await ppo.startRun(g, LEVELS[lv], piece.seed || null);
+    exitDest = null;
+    const acts = ppo.decodeActs(piece.acts), steps = Math.min(piece.steps, acts.length * 4);
+    let face = 1, act = 0;
+    for (let i = 0; i < steps && exitDest === null && !g.player.dead; i++) {
+      if (i % 4 === 0) { act = acts[i / 4]; const mv = (act % 3) - 1; if (mv !== 0) face = mv; }
+      ppo.applyAction(g, act, face); g.update(1 / 60);
+    }
+    if (g.player.dead) return false;
+    const nx = pieces[k + 1];
+    if (nx ? Math.round(g.player.x) !== nx.seed.px || Math.round(g.player.y) !== nx.seed.py : exitDest !== lv + 1) return false;
+  }
+  return true;
+}
+if (process.argv.includes('--recheck')) {
+  const { unlink } = await import('node:fs/promises');
+  const kept = [], dropped = [];
+  for (const leg of [...state.legs]) {
+    if (await replays(leg.level, leg.pieces)) kept.push(leg.level);
+    else { dropped.push(leg.level); state.legs = state.legs.filter((l) => l !== leg); }
+  }
+  for (let lv = 0; lv < LEVELS.length; lv++) {
+    let f = null;
+    try { f = JSON.parse(await readFile(levelFile(lv), 'utf8')); } catch { continue; }
+    if (!f.solved) continue;
+    if (await replays(lv, f.pieces)) kept.push(lv); else { dropped.push(lv); await unlink(levelFile(lv)); }
+  }
+  await save();
+  console.log(`routes that still replay: levels ${kept.sort((a, b) => a - b).join(', ') || 'none'}\nroutes dropped (to be searched again): levels ${dropped.sort((a, b) => a - b).join(', ') || 'none'}`);
+  process.exit(0);
+}
+
 // ---- many levels at once ----
 //   node web/tools/search.mjs --parallel [--jobs 6] [--per-level 30] [--upto 20]
-// Every level from the campaign's current one up to --upto (default 20: the
-// last level cannot be finished until its boss and ending are ported) that
-// has no route yet is searched in a process of its own.
+// Every level up to --upto (default 20: the last level cannot be finished
+// until its boss and ending are ported) that has no route yet is searched in
+// a process of its own.
 if (process.argv.includes('--parallel')) {
   const { spawn } = await import('node:child_process');
   const { openSync } = await import('node:fs');
   const jobs = +arg('jobs', 6), upto = +arg('upto', 20);
   const todo = [];
-  for (let lv = state.frontier; lv <= upto; lv++) {
-    let done = false;
-    try { done = JSON.parse(await readFile(levelFile(lv), 'utf8')).solved; } catch { /* not searched */ }
+  for (let lv = 0; lv <= upto; lv++) {
+    let done = state.legs.some((l) => l.level === lv);
+    if (!done) try { done = JSON.parse(await readFile(levelFile(lv), 'utf8')).solved; } catch { /* not searched */ }
     if (!done) todo.push(lv);
   }
   console.log(`searching levels ${todo.join(', ')}: ${jobs} at a time, up to ${PER_LEVEL / 60000} min each`);

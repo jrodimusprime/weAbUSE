@@ -754,7 +754,13 @@ export class Game {
         p.ladderExit = null;
       } else return null;
     }
-    return this.ladders.find((l) => p.x >= l.x0 - 5 && p.x <= l.x1 + 5 && p.y >= l.y0 && p.y <= l.y1);
+    // (3 px of grace below the foot. Level 8's ladder hangs 54 px above the
+    // deck of the lift that brings the player to it, and the jump is 51: in
+    // the original a rider rests a pixel or two clear of a lift's deck, as its
+    // object collision stops short of touching, and the jump just reaches.
+    // Here the rider stands flush on the deck, so the ladder reaches down to
+    // meet them instead.)
+    return this.ladders.find((l) => p.x >= l.x0 - 5 && p.x <= l.x1 + 5 && p.y >= l.y0 && p.y <= l.y1 + 3);
   }
 
   updatePlayer(dt) {
