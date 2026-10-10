@@ -9,7 +9,6 @@
     #wrap { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100%; }
     #c { width: min(100vw, 160vh); aspect-ratio: 8 / 5; image-rendering: pixelated; cursor: crosshair; }
     #stage { position: relative; }
-    #hint { position: absolute; left: 0; right: 0; top: 6%; text-align: center; color: #fff; font: bold min(2.4vw, 3.8vh) monospace; text-shadow: 1px 1px 2px #000, -1px -1px 2px #000; pointer-events: none; }
     #bar { padding: 6px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap; justify-content: center; }
     select, button { font: inherit; }
     button.on { background: #7a1f1f; color: #fff; }
@@ -41,7 +40,7 @@
 </head>
 <body>
   <div id="wrap">
-    <div id="stage"><canvas id="c"></canvas><div id="hint"></div></div>
+    <div id="stage"><canvas id="c"></canvas></div>
     <div id="touch">
       <div id="stick" aria-label="Movement joystick"><div class="knob"></div></div>
       <div class="acts">
@@ -54,6 +53,7 @@
     <div id="bar">
       <label>Level <select id="level"></select></label>
       <button id="god" type="button">God mode: off</button>
+      <button id="coords" type="button">Show coordinates</button>
       <button id="ppo" type="button">Train PPO</button>
       <button id="pause" type="button" disabled>Pause</button>
       <label>Show the latest attempt every <select id="showEvery">

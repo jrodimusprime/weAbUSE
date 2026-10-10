@@ -199,8 +199,14 @@ game.onGod = (on) => {
   godBtn.classList.toggle('on', on);
 };
 game.onLevel = (name) => { select.value = name; };
-const hint = document.getElementById('hint');
-game.onHelp = (text) => { hint.textContent = text; };
+// (help text is drawn by the game itself, in its own font)
+const coordsBtn = document.getElementById('coords');
+coordsBtn.addEventListener('click', () => {
+  game.showCoords = !game.showCoords;
+  coordsBtn.textContent = game.showCoords ? 'Hide coordinates' : 'Show coordinates';
+  coordsBtn.classList.toggle('on', game.showCoords);
+  coordsBtn.blur();
+});
 godBtn.addEventListener('click', () => { game.setGod(!game.god); godBtn.blur(); });
 
 await game.init();

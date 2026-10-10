@@ -37,6 +37,8 @@ const EXTRA_DEFS = [
   ...WEAPON_ORDER.map((w) => WEAPONS[w].top),
 ];
 const MIDDLE_DRAW = new Set(['exp_draw', 'middle_draw']);
+// startup.lsp: (load_big_font "art/fonts.spe" "screen11"), (load_small_font "art/fonts.spe" "small_font")
+const FONT_FILE = 'art/fonts.spe';
 const POWER_STATES = new Set(['stopped', 'running', 'start_run_jump', 'run_jump', 'run_jump_fall', 'end_run_jump']);
 const POWER_ICON = { FAST: 'fast_image', FLY: 'fly_image', SNEAKY: 'sneaky_image', HEALTH: 'b_check_image' };
 
@@ -121,6 +123,7 @@ export class Game {
 
   async init() {
     await this.assets.init();
+    await this.assets.preloadDef({ file: FONT_FILE }); // the game's own bitmap fonts
     this.r.setPalette(this.assets.palette);
     const t = this.assets.foreTile(1) || this.assets.foreTile(0);
     this.tw = t.w;
@@ -139,7 +142,7 @@ export class Game {
     };
     this.colors = {
       white: nearest(255, 255, 255), yellow: nearest(255, 230, 90), cyan: nearest(120, 220, 255),
-      green: nearest(90, 255, 90), orange: nearest(255, 140, 40),
+      green: nearest(90, 255, 90), orange: nearest(255, 140, 40), black: nearest(0, 0, 0),
       redBright: nearest(255, 0, 0), redDark: nearest(150, 0, 0),
     };
     this.player = {
@@ -595,6 +598,7 @@ export class Game {
 
   // Training hint shown over the game, with the original voice-over when there is one.
   showHelp(text, voice) {
+    this.helpText = text;
     this.onHelp?.(text);
     this.helpTime = 60;
     if (voice && this.helpVoice !== voice) { this.helpVoice = voice; this.audio.play(`voice/${voice}`, null); }
@@ -646,7 +650,7 @@ export class Game {
     if (!this.pressed('action')) this.tpLatch = false;
     this.tickCount = (this.tickCount || 0) + 1;
     if (this.msgTime > 0) this.msgTime--;
-    if (this.helpTime > 0 && --this.helpTime === 0) { this.onHelp?.(''); this.helpVoice = null; }
+    if (this.helpTime > 0 && --this.helpTime === 0) { this.helpText = ''; this.onHelp?.(''); this.helpVoice = null; }
     // cop.cpp top_ai: the weapon's fire_delay1 counts down once per tick.
     if (p.cooldown > 0) p.cooldown--;
     // The original's vertical physics, in its order (cop.cpp cop_mover, then
@@ -1033,7 +1037,75 @@ export class Game {
     // put_image at view_x2 - 20, view_y1 + 5).
     const icon = POWER_ICON[p.power] && this.assets.sprite('art/misc.spe', POWER_ICON[p.power]);
     if (icon) r.draw(icon, VIEW_W - 1 - 20, 5);
+    // Help text (game.cpp, DRAW_HELP_LAYER): the big font at (5, 5) between
+    // two rules across the top of the view, fading out through the grey ramp
+    // of the palette (colours 2 to 30) at the end. The original prints one
+    // line and lets a long message run off a 320-pixel screen; here it is
+    // wrapped instead.
+    if (this.helpText) {
+      const fade = this.helpTime < 14 ? 2 + (14 - this.helpTime) * 2 : 2;
+      const lines = this.wrapText(this.helpText, 'screen11', VIEW_W - 10);
+      const lh = this.fontCell('screen11').h;
+      r.rect(0, 0, VIEW_W, 1, fade);
+      r.rect(0, lines.length * lh + 9, VIEW_W, 1, fade);
+      lines.forEach((line, i) => this.drawText(line, 5, 5 + i * lh, fade, 'screen11'));
+    }
+    // Where the player is and where the pointer is, in level pixels (the "Show coordinates" button).
+    if (this.showCoords) {
+      const m = this.mouse;
+      const text = `PLAYER ${Math.round(p.x)},${Math.round(p.y)}${m ? `  POINTER ${Math.round(m.x + this.cam.x)},${Math.round(m.y + this.cam.y)}` : ''}`;
+      this.drawText(text, 4, VIEW_H - 11, 2, 'small_font');
+    }
     r.flush();
+  }
+
+  // ---- the game's bitmap fonts (imlib/fonts.cpp JCFont): a sheet of 32 x 8
+  // equal cells, one per character code; any pixel that is set is drawn in
+  // the one colour asked for (TransImage::PutColor). ----
+  fontCell(font) {
+    const sheet = this.assets.sprite(FONT_FILE, font);
+    return sheet ? { sheet, w: Math.floor((sheet.w + 1) / 32), h: Math.floor((sheet.h + 1) / 8) } : { sheet: null, w: 6, h: 8 };
+  }
+
+  glyph(font, code, color) {
+    this.glyphs ??= new Map();
+    const key = `${font}|${code}|${color}`;
+    let img = this.glyphs.get(key);
+    if (img === undefined) {
+      const { sheet, w, h } = this.fontCell(font);
+      img = null;
+      if (sheet && code < 256) {
+        const pix = new Uint8Array(w * h);
+        const sx = (code % 32) * w, sy = (code >> 5) * h;
+        let any = false;
+        for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (sheet.pix[(sy + y) * sheet.w + sx + x]) { pix[y * w + x] = color; any = true; }
+        if (any) img = { w, h, pix };
+      }
+      this.glyphs.set(key, img);
+    }
+    return img;
+  }
+
+  // Text in one palette colour, with a dark edge below and to the right so it reads over anything.
+  drawText(text, x, y, color, font = 'small_font') {
+    const { w } = this.fontCell(font);
+    for (let pass = 0; pass < 2; pass++) {
+      for (let i = 0; i < text.length; i++) {
+        const gimg = this.glyph(font, text.charCodeAt(i), pass ? color : this.colors.black ?? 1);
+        if (gimg) this.r.draw(gimg, x + i * w + (pass ? 0 : 1), y + (pass ? 0 : 1));
+      }
+    }
+  }
+
+  wrapText(text, font, width) {
+    const max = Math.max(1, Math.floor(width / this.fontCell(font).w));
+    const lines = [];
+    let line = '';
+    for (const word of text.split(' ')) {
+      if (line && line.length + 1 + word.length > max) { lines.push(line); line = word; } else line = line ? `${line} ${word}` : word;
+    }
+    if (line) lines.push(line);
+    return lines;
   }
 
   // Force-field beam from the emitter down to the floor.
