@@ -1361,6 +1361,9 @@ function snapshotState(g) {
     if (e.dead || e.id === undefined) continue;
     const o = {};
     for (const k of SNAP_FIELDS) o[k] = e[k];
+    // a delay gate part-way through its count: without this every restore
+    // starts the count again, and a door on a long delay can never be waited out
+    if (e.a.count > 0) o.count = e.a.count;
     o.links = e.links.filter((l) => l.id !== undefined).map((l) => l.id);
     es[e.id] = o;
   }
@@ -1391,6 +1394,7 @@ function restoreState(g, st) {
     const s = e.id === undefined ? null : st.es[e.id];
     if (!s) { e.dead = true; continue; } // it had died (or is a leftover effect)
     for (const k of SNAP_FIELDS) if (s[k] !== undefined) e[k] = s[k];
+    if (s.count > 0) e.a.count = s.count;
     if (!e.def.states.has(e.state)) e.state = 'stopped';
     e.px = e.x; e.py = e.y;
   }

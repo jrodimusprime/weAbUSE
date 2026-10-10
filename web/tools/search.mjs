@@ -44,7 +44,7 @@ const LOOK = 3;        // decisions between looks at where the player has got to
 const GRID_X = 36, GRID_Y = 30; // size of a cell, in pixels
 
 // ---- saved states, stored as what differs from the level's start ----
-const FIELDS = ['x', 'y', 'vx', 'vy', 'dir', 'state', 'frame', 'stateTime', 'aistate', 'aitype', 'hp', 'xvel', 'yvel', 'xacel', 'yacel', 'fade', 'shootable', 'hidden'];
+const FIELDS = ['count', 'x', 'y', 'vx', 'vy', 'dir', 'state', 'frame', 'stateTime', 'aistate', 'aitype', 'hp', 'xvel', 'yvel', 'xacel', 'yacel', 'fade', 'shootable', 'hidden'];
 function sameEnt(a, b) {
   for (const k of FIELDS) if (a[k] !== b[k]) return false;
   if (a.links.length !== b.links.length) return false;
@@ -104,7 +104,12 @@ function cellKey() {
   const p = g.player;
   let keys = '';
   for (const e of ppo.keysToGo(g)) keys += `${e.id}.`;
-  return `${Math.floor(p.x / GRID_X)},${Math.floor(p.y / GRID_Y)}|${keys}|${wallsLeft()}|${p.power || ''}|${[...p.owned].length}`;
+  // A delay gate that is counting is progress too (a door that opens after
+  // the player has stood by it for some seconds): how far each has got, in
+  // steps of 20 ticks, so that waiting is not thrown away as "nothing new".
+  let timers = '';
+  for (const e of g.entities) if (e.a.count > 0 && e.ai === 'delay_ai') timers += `${e.id}:${Math.floor(e.a.count / 20)}.`;
+  return `${Math.floor(p.x / GRID_X)},${Math.floor(p.y / GRID_Y)}|${keys}|${wallsLeft()}|${p.power || ''}|${[...p.owned].length}|${timers}`;
 }
 // Is arriving like this better than how the cell was reached before? Healthier, or as healthy and sooner.
 const better = (hp, steps, old) => hp >= old.hp + 10 || (hp >= old.hp - 4 && steps < old.steps * 0.9);
@@ -153,7 +158,8 @@ async function searchLevel(lv, entry, deadline) {
     const acts = [];
     let face = 1, act = 0, hold = 0;
     const dirBias = rnd() < 0.5 ? (rnd() < 0.5 ? 1 : -1) : 0; // some bursts keep heading one way
-    for (let d = 0; d < BURST; d++) {
+    const burst = rnd() < 0.25 ? BURST * 3 : BURST; // now and then a long one: some things take patience
+    for (let d = 0; d < burst; d++) {
       if (hold-- <= 0) { climb = 0; act = randomAct(dirBias); hold = climb || Math.floor(rnd() * rnd() * 14); }
       acts.push(act);
       const mv = (act % 3) - 1;
