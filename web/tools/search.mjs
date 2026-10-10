@@ -79,7 +79,11 @@ const ENEMY_NEAR = 260;
 let climb = 0; // set by randomAct: how long to hold a climb, in decisions
 function enemyNear() {
   const p = g.player;
-  for (const e of g.entities) if (!e.dead && e.shootable && !e.hidden && e.hp > 0 && Math.abs(e.x - p.x) < ENEMY_NEAR && Math.abs(e.y - p.y) < 180 && e.def.name !== 'DARNEL' && /ant|fly|gun|jug|bomb|rob|who|boss/i.test(e.ai || '')) return true;
+  for (const e of g.entities) {
+    if (e.dead) continue;
+    if (e.type === 'SWITCH_BALL' && e.aistate === 0 && Math.hypot(e.x - p.x, e.y - p.y) < 180) return true; // something to shoot, too
+    if (e.shootable && !e.hidden && e.hp > 0 && Math.abs(e.x - p.x) < ENEMY_NEAR && Math.abs(e.y - p.y) < 180 && e.def.name !== 'DARNEL' && /ant|fly|gun|jug|bomb|rob|who|boss/i.test(e.ai || '')) return true;
+  }
   return false;
 }
 // A random action, leaning the way a player does: mostly on the move, the
@@ -183,6 +187,10 @@ async function searchLevel(lv, entry, deadline) {
         break; // an exit to somewhere else: not a way on
       }
       if (g.player.dead) { deaths++; break; }
+      // Flown out over the top of the level (a start shaft open to the sky
+      // and a jetpack will do it): nothing up there, and the compass, which
+      // reads straight down through the ceiling, takes it for progress.
+      if (g.player.y < -30) break;
       if ((d + 1) % LOOK === 0) {
         const p = g.player;
         // only where the player could be put down again: standing, climbing or flying

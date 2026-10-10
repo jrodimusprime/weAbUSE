@@ -365,7 +365,7 @@ function keysToGo(g) {
   const out = [];
   for (const e of g.entities) {
     if (e.dead) continue;
-    if (e.aistate === 0 && SWITCH_AI.has(e.ai)) out.push(e);
+    if (e.aistate === 0 && (SWITCH_AI.has(e.ai) || e.type === 'SWITCH_BALL')) out.push(e); // (a switch ball is set off by shooting it)
     else if (e.ai === 'death_sen_ai' && e.aistate === 0) for (const l of e.links) if (!l.dead && !out.includes(l)) out.push(l);
   }
   return out;
@@ -1272,8 +1272,21 @@ export function applyAction(g, act, faceDir = 1) {
   // No enemy to shoot: aim at the nearest breakable wall in view instead, so
   // the fire button can open the routes that are walled off ("shoot hidden
   // walls to destroy them"). Walls under the feet are aimed at too.
+  // ...or at a switch ball that has not been set off yet ("shoot switch ball
+  // to activate"): they hang out of reach, often overhead, and nothing else
+  // makes the agent aim anywhere but straight ahead. Within the machine
+  // gun's range (its bullet flies about 170 px).
   let wall = null;
   if (!target) {
+    best = 170;
+    for (const e of g.entities) {
+      if (e.dead || e.type !== 'SWITCH_BALL' || e.aistate !== 0) continue;
+      const d = Math.hypot(e.x - p.x, e.y - 8 - (p.y - 15));
+      if (d >= best || !g.sees(p.x, p.y - 15, e.x, e.y - 8)) continue;
+      best = d; wall = { x: e.x, y: e.y - 8 };
+    }
+  }
+  if (!target && !wall) {
     best = Infinity;
     for (const e of g.entities) {
       if (e.dead || !e.shootable || !BREAK_AI.has(e.ai)) continue;
