@@ -1129,8 +1129,12 @@ function step(e) {
 
 // SWITCH_DELAY — press to toggle on, auto-resets after reset_time ticks
 // (switch_delay_cons: (setq reset_time 14)).
+// SWITCH_DELAY — switch.lsp switch_delay_ai: on from the press until
+// reset_time ticks after the player lets go. reset_time is the level's own
+// figure for each switch (level 8's is 45: long enough for the lifts it
+// calls to have been enabled, which takes 28).
 function switchDelay(e, g) {
-  e.a.reset ??= 14;
+  e.a.reset ??= e.lv?.reset_time ?? 14;
   switch (e.aistate) {
     case 0:
       e.nextPicture();
@@ -1140,7 +1144,7 @@ function switchDelay(e, g) {
         e.aistate = 1;
       }
       break;
-    case 1: if (!g.pressed('action')) e.aistate = 2; break;
+    case 1: if (!g.pressed('action')) goState(e, 2); break;
     case 2:
       if (e.stateTime > e.a.reset) { g.sound('switch', e.x, e.y); e.setState('stopped'); e.aistate = 0; }
       break;
