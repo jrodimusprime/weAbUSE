@@ -365,7 +365,10 @@ function keysToGo(g) {
   const out = [];
   for (const e of g.entities) {
     if (e.dead) continue;
-    if (e.aistate === 0 && (SWITCH_AI.has(e.ai) || e.type === 'SWITCH_BALL')) out.push(e); // (a switch ball is set off by shooting it)
+    // (A switch ball is set off by shooting it. A timed switch is left out:
+    // it goes off again by itself, so it would be "still to do" for ever and
+    // the compass would keep calling the player back to press it.)
+    if (e.aistate === 0 && e.ai !== 'switch_delay_ai' && (SWITCH_AI.has(e.ai) || e.type === 'SWITCH_BALL')) out.push(e);
     else if (e.ai === 'death_sen_ai' && e.aistate === 0) for (const l of e.links) if (!l.dead && !out.includes(l)) out.push(l);
   }
   return out;

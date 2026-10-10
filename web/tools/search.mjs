@@ -148,6 +148,15 @@ async function searchLevel(lv, entry, deadline) {
   // clear run to the exit that is not there, and nothing found afterwards
   // could ever look better than that.)
   const root = { key: cellKey(), snap: null, full: entry, parent: null, acts: '', pieceSteps: 0, steps: 0, hp: g.player.hp, dist: Infinity, chosen: 0, born: 0 };
+  // the states of the level the cells fall into (everything in a cell's key but the place and the timers)
+  const stateOf = (key) => key.split('|').slice(1, 5).join('|');
+  const states = new Map();
+  const noteState = (c) => {
+    c.state = stateOf(c.key);
+    const st = states.get(c.state) || states.set(c.state, { chosen: 0, best: Infinity }).get(c.state);
+    if (c.dist < st.best) st.best = c.dist;
+  };
+  noteState(root);
   cells.set(root.key, root); list.push(root);
   let iter = 0, simSteps = 0, bestDist = root.dist, bestCell = root, lastPrint = Date.now(), deaths = 0;
   const t0 = Date.now();
@@ -164,12 +173,26 @@ async function searchLevel(lv, entry, deadline) {
 
   while (Date.now() < deadline) {
     iter++;
-    // pick a cell: ones seldom tried, new ones, and ones furthest along the compass
+    // pick a cell: ones seldom tried, new ones, and ones furthest along the compass.
+    // Half the time the pick is made within one state of the level (which
+    // switches are on, what is dead), chosen evenly across the states: the
+    // state with the fewest things left to do is not always the way on (a
+    // toggle that shuts the route, a room that seals behind the player), and
+    // left to the compass alone the search pours its time into it.
+    let only = null, stateBest = bestDist;
+    if (states.size > 1 && rnd() < 0.5) {
+      let tot = 0;
+      for (const st of states.values()) tot += 1 / Math.sqrt(1 + st.chosen);
+      let pk = rnd() * tot;
+      for (const [k, st] of states) { only = k; stateBest = st.best; if ((pk -= 1 / Math.sqrt(1 + st.chosen)) <= 0) break; }
+      states.get(only).chosen++;
+    }
     let total = 0;
     const w = new Float64Array(list.length);
     for (let i = 0; i < list.length; i++) {
       const c = list[i];
-      const gap = c.dist - bestDist;
+      if (only !== null && c.state !== only) continue;
+      const gap = c.dist - stateBest;
       const lead = !isFinite(c.dist) ? 0.5 : gap <= 8 ? 10 : gap <= 60 ? 4 : gap <= 400 ? 1.5 : 1;
       const fresh = 1 + 3 * Math.exp(-(iter - c.born) / 300);
       w[i] = (lead * fresh) / Math.sqrt(1 + c.chosen);
@@ -213,6 +236,7 @@ async function searchLevel(lv, entry, deadline) {
         const dist = ppo.exitDist(g, next);
         const rec = { key, snap: pack(ppo.snapshotState(g), level0), parent: cell, acts: ppo.encodeActs(acts), pieceSteps: acts.length * 4, steps, hp: p.hp, dist: isFinite(dist) ? dist : (old ? old.dist : Infinity), chosen: old ? Math.floor(old.chosen / 2) : 0, born: iter, x: Math.round(p.x), y: Math.round(p.y) };
         cells.set(key, rec);
+        noteState(rec);
         if (old) list[list.indexOf(old)] = rec; else list.push(rec);
         if (rec.dist < bestDist) { bestDist = rec.dist; bestCell = rec; }
       }
@@ -225,7 +249,7 @@ async function searchLevel(lv, entry, deadline) {
   // out of time: a map of everywhere it stood in the furthest-on state of the
   // level, with what is still to be done marked, for working out what stops it
   {
-    const state = (c) => c.key.slice(c.key.indexOf('|'));
+    const state = (c) => c.state;
     const here = list.filter((c) => state(c) === state(bestCell));
     await ppo.startRun(g, LEVELS[lv], seedOf(bestCell));
     const W = g.level.fgW, H = g.level.fgH, rows = [];
@@ -236,7 +260,6 @@ async function searchLevel(lv, entry, deadline) {
     for (const e of g.entities) if (e.ai === 'next_level_ai') mark.set(`${Math.floor(e.x / g.tw)},${Math.floor((e.y - 1) / g.th)}`, e.aistate === next ? 'E' : 'x');
     mark.set(`${Math.floor(bestCell.x / g.tw)},${Math.floor((bestCell.y - 1) / g.th)}`, '@');
     for (let r = 0; r < H; r++) { let line = ''; for (let c = 0; c < W; c++) line += mark.get(`${c},${r}`) || (g.tileSolid(c * g.tw + 15, r * g.th + 7) ? '#' : ' '); rows.push(`${String(r * g.th).padStart(5)} ${line.replace(/\s+$/, '')}`); }
-    const states = new Map(); for (const c of list) states.set(state(c), (states.get(state(c)) || 0) + 1);
     const text = `Level ${lv}: not passed. ${list.length} cells in ${states.size} states of the level; the furthest-on state has ${here.length} cells.\n`
       + `Nearest the exit: ${ppo.fmtDist(bestDist)} at (${bestCell.x},${bestCell.y}), hp ${bestCell.hp}.\n`
       + `Still to do in that state (K on the map): ${todo.map((e) => `${e.def.name}@${Math.round(e.x)},${Math.round(e.y)}`).join('  ') || 'nothing'}\n`
