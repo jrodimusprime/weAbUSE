@@ -498,7 +498,19 @@ export function navGraph(g, nextNum) {
   for (const e of g.entities) {
     if (e.dead) continue;
     if (e.ai === 'tp2_ai' || e.ai === 'tpd_ai') {
-      addJump(cellOf(e), e.links[0] ? cellOf(e.links[0]) : null, 4);
+      // Where a teleporter leaves the player is where they land: straight
+      // down from its destination. (The nearest place to stand is not the
+      // same thing. Level 16's door opens half way down a shaft, beside the
+      // ledge the exit is on and a long way above the room the player
+      // actually drops into.)
+      const dest = e.links[0];
+      let land = null;
+      if (dest) {
+        const c = Math.floor(dest.x / tw);
+        for (let r = Math.max(0, Math.floor(dest.y / th)); r < H && land === null; r++) if (floorOK(c, r)) land = bodyOK(c, r) ? r * W + c : -1;
+        if (land === null || land < 0) land = cellOf(dest);
+      }
+      addJump(cellOf(e), land, 4);
     } else if (e.ai === 'platform_ai') {
       const stops = (e.links || []).slice(0, 2).map((l) => stopCell(l.x, l.y));
       if (!liftRuns(e)) continue; // waiting for its switch: somewhere to stand, not a ride
