@@ -677,16 +677,25 @@ export class Game {
     p.jumpQueued = false;
     this.applyArea();
     for (const e of this.entities) { e.px = e.x; e.py = e.y; }
+    // Which objects run this tick: those within their own range of the view
+    // widened by a quarter of its size on every side (game.cpp: add_actives
+    // over xoff - w/4 .. xoff + w + w/4), and everything an active object is
+    // linked to, however far away (level.cpp pull_actives). So a lift wakes
+    // up when the player reaches the far sensor it is wired to.
+    const active = new Set();
+    const pull = (e) => { for (const l of e.links) if (!active.has(l)) { active.add(l); pull(l); } };
+    const ax1 = this.cam.x - (VIEW_W >> 2), ax2 = this.cam.x + VIEW_W + (VIEW_W >> 2);
+    const ay1 = this.cam.y - (VIEW_H >> 2), ay2 = this.cam.y + VIEW_H + (VIEW_H >> 2);
+    for (const e of this.entities) {
+      if (active.has(e)) continue;
+      const [rx, ry] = e.def.range;
+      if (e.x + rx >= ax1 && e.x - rx <= ax2 && e.y + ry >= ay1 && e.y - ry <= ay2) { active.add(e); pull(e); }
+    }
     for (const e of this.entities.slice()) {
       if (e.dead || !e.ai) continue;
       const fn = behaviors[e.ai];
       if (!fn) continue;
-      if (!e.logic) {
-        const [rx, ry] = e.def.range;
-        const off = e.x < this.cam.x - rx - 20 || e.x > this.cam.x + VIEW_W + rx + 20
-          || e.y < this.cam.y - ry - 40 || e.y > this.cam.y + VIEW_H + ry + 80;
-        if (off) continue;
-      }
+      if (!e.logic && !active.has(e)) continue;
       e.stateTime++;
       if (fn(e, this) === false) e.dead = true;
       // Anything that falls out of the world is removed (as the original does).
