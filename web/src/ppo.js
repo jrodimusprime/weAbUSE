@@ -1455,10 +1455,44 @@ export { snapshotState, restoreState };
 // replays and the "Replay best run" button alike — so a recorded run can be
 // reproduced exactly: load the level, reset everything that outlives a level
 // load, then (for runs resumed from a checkpoint) restore the saved state.
+// A saved state written as what differs from the level as it starts: most of
+// a level's few hundred objects have not changed at any given moment, and a
+// recording holds a saved state for every piece. (`packed` marks the form.)
+export function packSeed(seed, base) {
+  const es = {}, gone = [];
+  for (const id in seed.es) {
+    const a = seed.es[id], b = base.es[id];
+    if (!b) { es[id] = a; continue; }
+    // only the fields that differ (for most objects that have changed at all, a frame counter or two)
+    let d = null;
+    for (const k of SNAP_FIELDS) if (a[k] !== b[k]) (d ??= {})[k] = a[k] === undefined ? null : a[k];
+    if (a.count !== b.count) (d ??= {}).count = a.count ?? 0;
+    if (a.links.length !== b.links.length || !a.links.every((l, n) => l === b.links[n])) (d ??= {}).links = a.links;
+    if (d) es[id] = d;
+  }
+  for (const id in base.es) if (!seed.es[id]) gone.push(+id);
+  return { ...seed, es, gone, packed: true };
+}
+export function expandSeed(packed, base) {
+  const es = {};
+  for (const id in base.es) es[id] = base.es[id];
+  for (const id of packed.gone) delete es[id];
+  for (const id in packed.es) {
+    const b = base.es[id], d = packed.es[id];
+    const o = b ? { ...b, ...d } : d;
+    for (const k in o) if (o[k] === null) o[k] = undefined;
+    if (o.count === 0) delete o.count;
+    es[id] = o;
+  }
+  const { gone, packed: _p, ...rest } = packed; // eslint-disable-line no-unused-vars
+  return { ...rest, es };
+}
+
 export async function startRun(g, levelFile, seed = null) {
   await g.start(levelFile);
   g.freshRun();
   if (!seed) return;
+  if (seed.packed) seed = expandSeed(seed, snapshotState(g));
   restoreState(g, seed);
   // a checkpoint taken standing in an exit would end the run on its first step
   const onExit = g.entities.some((e) => !e.dead && e.ai === 'next_level_ai'

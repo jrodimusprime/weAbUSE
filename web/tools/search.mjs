@@ -299,7 +299,14 @@ async function writeDemo() {
   for (let lv = 0; lv < LEVELS.length; lv++) {
     const ps = legs.get(lv) || gaveUp.get(lv);
     if (!ps) continue;
-    ps.forEach((piece, i) => pieces.push({ ...piece, levelIdx: lv, ...(gaveUp.has(lv) && i === ps.length - 1 ? { gaveUp: true } : {}) }));
+    // each piece's saved state goes into the file as what differs from the
+    // level as it starts (ppo.packSeed): whole, the file runs to 80 MB
+    await ppo.startRun(g, LEVELS[lv], null);
+    const fresh = ppo.snapshotState(g);
+    ps.forEach((piece, i) => pieces.push({
+      ...piece, seed: piece.seed ? ppo.packSeed(piece.seed, fresh) : null, levelIdx: lv,
+      ...(gaveUp.has(lv) && i === ps.length - 1 ? { gaveUp: true } : {}),
+    }));
   }
   let frontier = 0;
   while (legs.has(frontier)) frontier++;
