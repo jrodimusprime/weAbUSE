@@ -278,25 +278,35 @@ const levelFile = (lv) => `${LEVEL_DIR}level${String(lv).padStart(2, '0')}.json`
 let state = { frontier: 0, entry: null, legs: [], partial: null };
 if (!process.argv.includes('--fresh')) { try { state = JSON.parse(await readFile(STATE_FILE, 'utf8')); } catch { /* nothing to resume */ } }
 
-// The demo: every level that has a route, in order. First the levels passed
-// one after another (health and weapons carried from each into the next),
-// then any searched on its own from a fresh start (train-out/levels/).
+// The demo: every level, in order. The levels passed one after another
+// (health and weapons carried from each into the next), any searched on its
+// own from a fresh start (train-out/levels/), and, for a level the search
+// could not pass, its furthest attempt: played to where it got to, where the
+// demo stops for a while under the words "AI gave up" (the last piece of such
+// a level is marked gaveUp).
 async function writeDemo() {
   const legs = new Map(state.legs.map((l) => [l.level, l.pieces]));
+  const gaveUp = new Map();
   for (let lv = 0; lv < LEVELS.length; lv++) {
     if (legs.has(lv)) continue;
-    try { const f = JSON.parse(await readFile(levelFile(lv), 'utf8')); if (f.solved) legs.set(lv, f.pieces); } catch { /* not searched */ }
+    try {
+      const f = JSON.parse(await readFile(levelFile(lv), 'utf8'));
+      if (f.solved) legs.set(lv, f.pieces); else if (f.pieces?.length) gaveUp.set(lv, f.pieces);
+    } catch { /* not searched */ }
   }
   const levels = [...legs.keys()].sort((a, b) => a - b);
   const pieces = [];
-  for (const lv of levels) for (const piece of legs.get(lv)) pieces.push({ ...piece, levelIdx: lv });
+  for (let lv = 0; lv < LEVELS.length; lv++) {
+    const ps = legs.get(lv) || gaveUp.get(lv);
+    if (!ps) continue;
+    ps.forEach((piece, i) => pieces.push({ ...piece, levelIdx: lv, ...(gaveUp.has(lv) && i === ps.length - 1 ? { gaveUp: true } : {}) }));
+  }
   let frontier = 0;
   while (legs.has(frontier)) frontier++;
-  if (state.partial && !legs.has(state.partial.levelIdx) && state.partial.levelIdx === frontier) for (const piece of state.partial.pieces) pieces.push({ ...piece, levelIdx: frontier });
   if (!pieces.length) return levels;
   // The file may hold the older PPO recording: kept beside the search's progress the first time it is replaced.
   try { const old = JSON.parse(await readFile(DEMO_FILE, 'utf8')); if (old.source !== 'search') await copyFile(DEMO_FILE, `${OUT}ppo-demo-before-search.json`); } catch { /* none */ }
-  await writeFile(DEMO_FILE, JSON.stringify({ format: ppo.DEMO_FORMAT, savedAt: new Date().toISOString(), source: 'search', passed: levels, frontier, dist: null, pieces }));
+  await writeFile(DEMO_FILE, JSON.stringify({ format: ppo.DEMO_FORMAT, savedAt: new Date().toISOString(), source: 'search', passed: levels, gaveUp: [...gaveUp.keys()], frontier, dist: null, pieces }));
   return levels;
 }
 async function save() {

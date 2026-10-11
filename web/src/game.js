@@ -1119,6 +1119,16 @@ export class Game {
       r.rect(0, lines.length * lh + 9, VIEW_W, 1, fade);
       lines.forEach((line, i) => this.drawText(line, 5, 5 + i * lh, fade, 'screen11'));
     }
+    // A notice across the middle of the view (the demo's "AI gave up").
+    if (this.banner) {
+      const cell = this.fontCell('screen11');
+      const w = this.banner.length * cell.w;
+      const bx = Math.round((VIEW_W - w) / 2), by = Math.round(VIEW_H / 2 - cell.h / 2);
+      r.rect(bx - 8, by - 6, w + 16, cell.h + 11, this.colors.black);
+      r.rect(bx - 8, by - 6, w + 16, 1, this.colors.white);
+      r.rect(bx - 8, by + cell.h + 4, w + 16, 1, this.colors.white);
+      this.drawText(this.banner, bx, by, this.colors.white, 'screen11');
+    }
     // Where the player is and where the pointer is, in level pixels (the "Show coordinates" button).
     if (this.showCoords) {
       const m = this.mouse;

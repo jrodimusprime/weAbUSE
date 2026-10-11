@@ -15,12 +15,16 @@ import { DATA } from './assets.js';
 
 export const LEVELS = Array.from({ length: 22 }, (_, i) => `level${String(i).padStart(2, '0')}.spe`);
 
+const GAVE_UP_MS = 15000; // how long the demo rests on the spot where the search gave up
+
 let active = null;
 
 export function stopDemo() {
   const a = active;
   if (!a) return;
   const g = a.game;
+  if (a.wait) clearTimeout(a.wait);
+  g.banner = null;
   g.demo = false;
   g.hold = false;
   g.speed = 1;
@@ -84,7 +88,7 @@ function playPieces(game, btn, select, pieces) {
   game.onEndGame = () => { exited = true; };
   const next = () => {
     if (active !== mine) return;
-    if (++k >= pieces.length) { finish(`Demo finished on level ${pieces[pieces.length - 1].levelIdx}: that is as far as the recording goes`); return; }
+    if (++k >= pieces.length) { finish('Demo finished'); return; }
     const piece = pieces[k];
     exited = false;
     game.hold = true; // no steps until the piece is set up exactly as it was recorded
@@ -93,7 +97,22 @@ function playPieces(game, btn, select, pieces) {
       if (active !== mine) return;
       const bot = new ReplayBot(piece);
       // the bot is stepped inside each game update; move on once it has run out
-      game.bot = { step: (g) => { bot.step(g); if (bot.done === 'died') finish(`Demo stopped: the run died on level ${piece.levelIdx}`); else if (bot.done || exited) { game.hold = true; game.bot = null; queueMicrotask(next); } } };
+      game.bot = {
+        step: (g) => {
+          bot.step(g);
+          if (!(bot.done || exited)) return;
+          g.hold = true; g.bot = null;
+          // The search's furthest attempt at a level it could not pass ends
+          // here: the picture stays put for a while under "AI gave up", then
+          // the demo goes on to the next level. (An attempt that ends with
+          // the player dead is shown the same way.)
+          if (piece.gaveUp && !exited) {
+            g.banner = 'AI gave up';
+            mine.wait = setTimeout(() => { mine.wait = null; if (active === mine) { g.banner = null; next(); } }, GAVE_UP_MS);
+          } else if (bot.done === 'died') finish(`Demo stopped: the run died on level ${piece.levelIdx}`);
+          else queueMicrotask(next);
+        },
+      };
       game.hold = false;
     }, () => finish('Demo stopped: level failed to load'));
   };
