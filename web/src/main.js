@@ -1,7 +1,7 @@
 import { Game } from './game.js';
 import { WEAPON_ORDER } from './weapons.js';
 import { readPalette, T } from './spec.js';
-import { LEVELS, toggleFullGameDemo, loadDemoFile, stopDemo } from './demo.js';
+import { LEVELS, toggleFullGameDemo, loadDemoFile, stopDemo, demoRunning, toggleDemoPause } from './demo.js';
 import { PpoTrainer, loadCampaign, saveCampaign, saveStations, forgetTraining, CAMPAIGN_KEY, STATIONS_KEY } from './ppo.js';
 
 const select = document.getElementById('level');
@@ -68,10 +68,28 @@ const describeDemo = async () => {
   }
 };
 describeDemo();
+// Pause demo: only live while the demo is running (checked a few times a second: the demo also ends by itself).
+const pauseDemoBtn = document.getElementById('pauseDemo');
+const refreshPauseDemo = () => {
+  pauseDemoBtn.disabled = !demoRunning();
+  pauseDemoBtn.textContent = demoRunning() && game.paused ? 'Resume demo' : 'Pause demo';
+  pauseDemoBtn.classList.toggle('on', demoRunning() && !!game.paused);
+};
+setInterval(refreshPauseDemo, 300);
+pauseDemoBtn.addEventListener('click', () => { toggleDemoPause(); pauseDemoBtn.blur(); refreshPauseDemo(); });
 fullGameBtn.addEventListener('click', async () => {
   stopTraining();
   fullGameBtn.blur();
   await toggleFullGameDemo(game, fullGameBtn, select);
+  refreshPauseDemo();
+});
+// Show intro: the opening story; when it is over (or a key or click cuts it short) the game starts at level 00.
+document.getElementById('intro').addEventListener('click', (e) => {
+  e.currentTarget.blur();
+  stopTraining();
+  stopDemo();
+  refreshPauseDemo();
+  game.showIntro();
 });
 
 // Forget training: wipes what this browser has learned and recorded, so the
@@ -307,4 +325,5 @@ panel.addEventListener('mouseleave', () => { hover = -1; });
 panel.addEventListener('click', (e) => { const slot = barSlotAt(e.clientX); if (slot >= 0) game.selectWeapon(WEAPON_ORDER[slot]); });
 
 select.addEventListener('change', () => { select.blur(); game.start(select.value); });
+await game.showTitle(5000); // the title screen, for five seconds, before the first level
 await game.start(LEVELS[0]);

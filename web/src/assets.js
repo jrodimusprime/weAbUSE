@@ -86,6 +86,14 @@ export class Assets {
     this.tints.ant_draw[0] = null; // ant_draw: aitype 0 is drawn plain
   }
 
+  // The palette stored in an art file under the plain name "palette" (some
+  // files also carry a high-resolution one), as RGBA; null if it has none.
+  paletteOf(file) {
+    const spec = this.specCache?.get(file);
+    const e = spec?.find('palette');
+    return e ? readPalette(spec, e) : null;
+  }
+
   // The tint table an object is drawn with, if any (ant_draw / gun_draw).
   tintFor(e) {
     const list = this.tints?.[e.def.funs.get('draw_fun')];

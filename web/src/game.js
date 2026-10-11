@@ -40,6 +40,13 @@ const MIDDLE_DRAW = new Set(['exp_draw', 'middle_draw']);
 // startup.lsp: (load_big_font "art/fonts.spe" "screen11"), (load_small_font "art/fonts.spe" "small_font")
 const FONT_FILE = 'art/fonts.spe';
 const END_FILE = 'art/fore/endgame.spe';
+const TITLE_FILE = 'art/title.spe'; // startup.lsp: title_screen and logo
+const SMOKE_FILE = 'art/smoke.spe'; // the picture and smoke behind the opening story
+// english.lsp plot_start
+const PLOT_START = 'You are Nick Vrenna. It is the year 2009.  You have been falsely incarcerated inside a high security underground prison where illegal genetic experiments are taking place.\n'
+  + 'Alan Blake, the head research scientist, has isolated the specific gene which causes violence and aggression in humans.  This genetic sequence, called "Abuse", is highly infectious, causing horrific transformations and grotesque side-effects.  You are the only person to show immunity to it. \n'
+  + 'A prison riot erupts, and in the confusion all the cell doors are opened.  Soon everyone, guards and convicts alike, become infected and transform into a horde of mutants which take over the building.\n'
+  + "Your only chance for escape is to don battle armor and reach the Control Room situated in the structure's deepest level.  You must first stop the prison's Abuse-infected water supply from contaminating the outside world.   Freedom and the fate of the world now depend on you. ";
 // english.lsp plot_end
 const PLOT_END = "You've survived impossible odds and made it to the Control Room.  By pulling the switch, you have diverted the water supply and stopped the spread of Abuse!\nCONGRATULATIONS!  YOU'RE HOWLING!!!";
 const POWER_STATES = new Set(['stopped', 'running', 'start_run_jump', 'run_jump', 'run_jump_fall', 'end_run_jump']);
@@ -95,6 +102,7 @@ export class Game {
         if (e.code === 'Escape') this.onDemoStop?.();
         return;
       }
+      if (this.cut) { if (performance.now() - this.cut.at > 600) this.leaveIntro(); e.preventDefault(); return; }
       if (this.ended) { this.leaveEnding(); e.preventDefault(); return; }
       this.keys.add(e.code);
       if (e.code.startsWith('Arrow') || e.code === 'Space') e.preventDefault();
@@ -111,7 +119,7 @@ export class Game {
       const b = canvas.getBoundingClientRect();
       this.mouse = { x: ((e.clientX - b.left) / b.width) * VIEW_W, y: ((e.clientY - b.top) / b.height) * VIEW_H };
     });
-    canvas.addEventListener('mousedown', (e) => { if (this.ended) { this.leaveEnding(); return; } if (e.button === 0) this.mouseDown = true; if (e.button === 2) this.rightDown = true; });
+    canvas.addEventListener('mousedown', (e) => { if (this.cut) { if (performance.now() - this.cut.at > 600) this.leaveIntro(); return; } if (this.ended) { this.leaveEnding(); return; } if (e.button === 0) this.mouseDown = true; if (e.button === 2) this.rightDown = true; });
     addEventListener('mouseup', () => { this.mouseDown = false; this.rightDown = false; });
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
     canvas.addEventListener('wheel', (e) => {
@@ -129,6 +137,8 @@ export class Game {
     await this.assets.init();
     await this.assets.preloadDef({ file: FONT_FILE }); // the game's own bitmap fonts
     await this.assets.preloadDef({ file: END_FILE }); // the picture behind the ending
+    await this.assets.preloadDef({ file: TITLE_FILE });
+    await this.assets.preloadDef({ file: SMOKE_FILE });
     this.r.setPalette(this.assets.palette);
     const t = this.assets.foreTile(1) || this.assets.foreTile(0);
     this.tw = t.w;
@@ -273,7 +283,7 @@ export class Game {
       return;
     }
     // hold: a scripted run is waiting on a level load and must not be stepped
-    if (this.hold) this.acc = 0;
+    if (this.hold || this.paused) this.acc = 0; // (paused: the demo's Pause button)
     else {
       this.acc += dt * this.speed;
       while (this.acc >= STEP && !this.hold) { this.update(STEP); this.acc -= STEP; }
@@ -654,6 +664,95 @@ export class Game {
   }
 
   // ---- simulation ----
+  // ---- the title screen and the opening story (game.cpp do_title) ----
+
+  // The title picture, on its own, for `ms` milliseconds: what the page opens
+  // with, before any level is loaded. (The original leaves it up behind its
+  // menu; there is no menu here.)
+  showTitle(ms) {
+    const im = this.assets.sprite(TITLE_FILE, 'title_screen');
+    if (!im) return Promise.resolve();
+    return new Promise((resolve) => {
+      const t0 = performance.now();
+      const draw = () => {
+        this.r.begin();
+        this.r.setLit(false);
+        this.r.draw(im, 0, 0, { opaque: true });
+        this.r.flush();
+        if (performance.now() - t0 < ms) requestAnimationFrame(draw); else resolve();
+      };
+      draw();
+    });
+  }
+
+  // The opening story: the maker's logo for a moment, then the story text
+  // scrolling up, one pixel every 120 ms for 400 steps, over the grey picture
+  // with its smoke (five frames, one per step), in that picture's own
+  // palette. A key or a click cuts it short. Afterwards the game starts at
+  // the first level. (The original fades between the parts and plays its
+  // intro music; neither is done here.)
+  showIntro() {
+    if (this.cut || !this.level) return;
+    this.ended = null;
+    this.keys.clear(); this.mouseDown = false; this.rightDown = false;
+    this.cut = { at: performance.now(), story: false };
+  }
+
+  leaveIntro() {
+    if (!this.cut) return;
+    this.cut = null;
+    this.glyphs = null; // (letters were cached in the story's colours)
+    this.r.setPalette(this.assets.palette);
+    this.start('level00.spe');
+  }
+
+  drawIntro() {
+    const r = this.r, cut = this.cut;
+    const t = performance.now() - cut.at;
+    r.begin();
+    r.setLit(false);
+    if (t < 1600) { // the logo
+      const logo = this.assets.sprite(TITLE_FILE, 'cdc_logo');
+      if (logo) r.draw(logo, Math.round((VIEW_W - logo.w) / 2), Math.round((VIEW_H - logo.h) / 2), { opaque: true });
+      r.flush();
+      return;
+    }
+    if (!cut.story) {
+      cut.story = true;
+      // smoke.spe's palette, doubled (do_title: pal->shift(1))
+      const src = this.assets.paletteOf(SMOKE_FILE);
+      if (src) {
+        const pal = new Uint8Array(src.length);
+        for (let i = 0; i < src.length; i++) pal[i] = i % 4 === 3 ? 255 : Math.min(255, src[i] * 2);
+        r.setPalette(pal);
+        const near = (R, G, B) => { let best = 1, bd = Infinity; for (let i = 1; i < 256; i++) { const d = (R - pal[i * 4]) ** 2 + (G - pal[i * 4 + 1]) ** 2 + (B - pal[i * 4 + 2]) ** 2; if (d < bd) { bd = d; best = i; } } return best; };
+        cut.white = near(255, 255, 255); cut.black = near(0, 0, 0);
+        this.glyphs = null;
+        const fc = this.fontCell('screen11');
+        cut.lh = fc.h + 1;
+        cut.lines = PLOT_START.split('\n').flatMap((para) => [...this.wrapText(para.trim(), 'screen11', 290), '']);
+      } else { this.leaveIntro(); return; }
+    }
+    const step = Math.floor((t - 1600) / 120);
+    if (step >= 400) { this.leaveIntro(); return; }
+    const gray = this.assets.sprite(SMOKE_FILE, 'gray_pict');
+    const dx = gray ? Math.round((VIEW_W - gray.w) / 2) : 0, dy = gray ? Math.round((VIEW_H - gray.h) / 2) : 0;
+    if (gray) r.draw(gray, dx, dy, { opaque: true });
+    const smoke = this.assets.sprite(SMOKE_FILE, `smoke000${(step % 5) + 1}.pcx`);
+    if (smoke) r.draw(smoke, dx + 24, dy + 5);
+    cut.lines.forEach((line, i) => {
+      const y = dy + 205 - step + i * cut.lh;
+      if (!line || y <= dy - cut.lh || y >= dy + 199) return;
+      for (let pass = 0; pass < 2; pass++) {
+        for (let n = 0; n < line.length; n++) {
+          const gimg = this.glyph('screen11', line.charCodeAt(n), pass ? cut.white : cut.black);
+          if (gimg) r.draw(gimg, dx + 15 + n * 7 + (pass ? 0 : 1), y + (pass ? 0 : 1));
+        }
+      }
+    });
+    r.flush();
+  }
+
   // The game is won (endgame.cpp show_end): the end picture, with the closing
   // text scrolling up over it one pixel every 0.18 s. A key or a click after
   // that goes back to the first level. Scripted runs (the demo, the search)
@@ -689,7 +788,7 @@ export class Game {
 
   update(dt) {
     const p = this.player;
-    if (!p || !this.level || this.ended) return;
+    if (!p || !this.level || this.ended || this.cut) return;
     if (this.bot) this.bot.step(this);
     this.updatePlayer(dt);
     this.tickAcc += dt;
@@ -1033,6 +1132,7 @@ export class Game {
   render() {
     const lv = this.level;
     if (!lv) return;
+    if (this.cut) { this.drawIntro(); return; }
     if (this.ended) { this.drawEnding(); return; }
     const r = this.r;
     const cx = Math.floor(this.cam.x), cy = Math.floor(this.cam.y);

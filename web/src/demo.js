@@ -19,11 +19,34 @@ const GAVE_UP_MS = 15000; // how long the demo rests on the spot where the searc
 
 let active = null;
 
+// The rest under "AI gave up": a timer that the Pause button stops and restarts.
+function startWait(a) {
+  a.waitFrom = performance.now();
+  a.wait = setTimeout(() => { a.wait = null; a.left = 0; const go = a.resume; a.resume = null; if (active === a && go) go(); }, a.left);
+}
+
+export const demoRunning = () => !!active;
+export const demoPaused = () => !!active?.game.paused;
+// Pause or resume the demo where it is.
+export function toggleDemoPause() {
+  const a = active;
+  if (!a) return false;
+  const g = a.game;
+  g.paused = !g.paused;
+  if (a.resume) {
+    if (g.paused && a.wait) { clearTimeout(a.wait); a.wait = null; a.left = Math.max(0, a.left - (performance.now() - a.waitFrom)); }
+    else if (!g.paused && !a.wait) startWait(a);
+  }
+  return g.paused;
+}
+
 export function stopDemo() {
   const a = active;
   if (!a) return;
   const g = a.game;
   if (a.wait) clearTimeout(a.wait);
+  a.resume = null;
+  g.paused = false;
   g.banner = null;
   g.demo = false;
   g.hold = false;
@@ -108,7 +131,9 @@ function playPieces(game, btn, select, pieces) {
           // the player dead is shown the same way.)
           if (piece.gaveUp && !exited) {
             g.banner = 'AI gave up';
-            mine.wait = setTimeout(() => { mine.wait = null; if (active === mine) { g.banner = null; next(); } }, GAVE_UP_MS);
+            mine.resume = () => { g.banner = null; next(); };
+            mine.left = GAVE_UP_MS;
+            if (!g.paused) startWait(mine);
           } else if (bot.done === 'died') finish(`Demo stopped: the run died on level ${piece.levelIdx}`);
           else queueMicrotask(next);
         },
