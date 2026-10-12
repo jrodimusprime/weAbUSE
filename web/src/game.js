@@ -359,6 +359,29 @@ export class Game {
     return this.tileSolid(r, top);
   }
 
+  // Step-up climb: objects.cpp try_move checks the moving (front) edge fully
+  // and the head at its centre, so the player can climb a slope under a ceiling
+  // overhang (level 11's diagonal shaft at x≈2281,y≈396) without the head's
+  // trailing corner wedging — but a wall in front still blocks at any height.
+  boxHitsClimb(x, y, hw, bh, ignore, dir) {
+    const l = Math.floor(x - hw), r = Math.floor(x + hw), top = Math.floor(y - bh), yy = Math.floor(y);
+    const set = ignore instanceof Set ? ignore : null;
+    for (const s of this.solids) {
+      if (set ? set.has(s.e) : s.e === ignore) continue;
+      if (r >= s.x0 && l <= s.x1 && yy - 1 >= s.y0 && top <= s.y1) return true;
+    }
+    const front = dir > 0 ? r : l, back = dir > 0 ? l : r;
+    const body = top + 8; // head height: the back edge is only checked below it
+    for (let py = top; py < yy; py += 4) {
+      if (this.tileSolid(front, py)) return true;
+      if (py >= body && this.tileSolid(back, py)) return true;
+    }
+    if (this.tileSolid(l, yy - 1) || this.tileSolid(r, yy - 1)) return true;
+    for (let px = l; px <= r; px += 3) if (this.tileSolid(px, yy - 1)) return true;
+    const cx = Math.floor(x);
+    return this.tileSolid(cx, top) || this.tileSolid(cx - 1, top) || this.tileSolid(cx + 1, top);
+  }
+
   sees(x1, y1, x2, y2) {
     const n = Math.max(1, Math.ceil(Math.hypot(x2 - x1, y2 - y1) / 3));
     for (let i = 1; i < n; i++) {
@@ -1124,6 +1147,10 @@ export class Game {
   moveX(p, dx) {
     const n = Math.ceil(Math.abs(dx));
     const s = Math.sign(dx);
+    // level 11's diagonal shaft has a ceiling overhang the original's
+    // centre-head climb clears but the full-box step-up does not; relax the
+    // head check there only, so every other level's movement is unchanged.
+    const step = this.level?.name === 'level11.spe' ? this.boxHitsClimb : this.boxHits;
     for (let i = 0; i < n; i++) {
       const nx = p.x + s * Math.min(1, Math.abs(dx) - i);
       if (!this.boxHits(nx, p.y, HALF_W, BODY_H, this.around)) { p.x = nx; continue; }
@@ -1131,7 +1158,7 @@ export class Game {
       // lets the player run up the level's staircase steps (up to ~13 px).
       // 16 px reproduces that climb while walls taller than the body still stop.
       let up = 1;
-      while (up <= 16 && this.boxHits(nx, p.y - up, HALF_W, BODY_H, this.around)) up++;
+      while (up <= 16 && step.call(this, nx, p.y - up, HALF_W, BODY_H, this.around, s)) up++;
       if (up <= 16) { p.x = nx; p.y -= up; } else { p.vx = 0; break; }
     }
   }
