@@ -128,9 +128,19 @@ export class Game {
     }, { passive: false });
   }
 
+  // God mode: no damage, unlimited ammunition, every weapon in hand, running
+  // at the speed power's pace, and flight on the power button (right mouse).
+  // (Turning it off leaves the weapons, with whatever ammunition they had.)
   setGod(on) {
     this.god = on;
+    if (on) this.giveAllWeapons();
     this.onGod?.(on);
+  }
+
+  giveAllWeapons() {
+    const p = this.player;
+    if (!p) return;
+    for (const w of WEAPON_ORDER) p.owned.add(w);
   }
 
   async init() {
@@ -217,6 +227,7 @@ export class Game {
     const start = level.objects.find((o) => o.type === 'START');
     this.startPos = { x: start ? start.x : 100, y: start ? start.y : 100 };
     this.respawn();
+    if (this.god) this.giveAllWeapons(); // (a new level, or a restart, in god mode)
     this.cam.x = this.player.x - VIEW_W / 2;
     this.cam.y = this.player.y - VIEW_H / 2;
     if (!this.running) { this.running = true; this.last = performance.now(); requestAnimationFrame((t) => this.frame(t)); }
@@ -839,7 +850,8 @@ export class Game {
     // the player is put in the air with the fall's acceleration cleared, a
     // fall is halved, and they are pushed up by 2 (3 while pressing up),
     // trailing a cloud. It is a thrust against gravity, not free flight.
-    const special = this.rightDown && !p.dead ? p.power : null;
+    // (in god mode the power button always flies, whatever power is in hand, and running is always at speed)
+    const special = this.rightDown && !p.dead ? (this.god ? 'FLY' : p.power) : null;
     if (special === 'FLY' && !p.climbing) {
       const k = this.keys;
       const up = k.has('ArrowUp') || k.has('KeyW') || k.has('Space') || k.has('KeyZ');
@@ -1335,6 +1347,6 @@ export class Game {
     const here = this.godDeaths[this.level.name] || 0;
     const total = Object.values(this.godDeaths).reduce((a, b) => a + b, 0);
     const ammo = this.god ? '∞' : (p.ammo[p.weapon] || 0);
-    this.hud.textContent = `${this.level.name}  HP ${Math.ceil(p.hp)}  ${w.label} ${ammo}  ${owned}${p.power === 'FAST' || p.power === 'FLY' ? `  ${p.power === 'FAST' ? 'RUN' : 'FLY'}: hold right mouse` : ''}${this.god ? `  GOD deaths: ${here} here, ${total} total` : ''}${this.msgTime > 0 ? `  -- ${this.msg}` : ''}`;
+    this.hud.textContent = `${this.level.name}  HP ${Math.ceil(p.hp)}  ${w.label} ${ammo}  ${owned}${p.power === 'FAST' || p.power === 'FLY' ? `  ${p.power === 'FAST' ? 'RUN' : 'FLY'}: hold right mouse` : ''}${this.god ? `  GOD (right mouse flies) deaths: ${here} here, ${total} total` : ''}${this.msgTime > 0 ? `  -- ${this.msg}` : ''}`;
   }
 }
