@@ -1,0 +1,13 @@
+#!/bin/sh
+# Project rule 5: the regression test runs after every commit.
+# (Enable once per clone:  git config core.hooksPath .githooks)
+cd "$(git rev-parse --show-toplevel)" || exit 0
+echo "post-commit: replaying every winning run (web/tools/regress.mjs)..."
+if node web/tools/regress.mjs > .git/regress.log 2>&1; then
+  tail -1 .git/regress.log
+else
+  echo "REGRESSION: a level that was won is no longer won by its recorded run."
+  grep "^FAIL" .git/regress.log
+  echo "Do not push until this is put right: see web/tools/regress.mjs. Full output: .git/regress.log"
+fi
+exit 0

@@ -206,11 +206,25 @@ async function searchLevel(lv, entry, deadline) {
     await ppo.startRun(g, LEVELS[lv], seedOf(cell));
     exitDest = null;
     const acts = [];
-    let face = 1, act = 0, hold = 0;
+    let face = 1, act = 0, hold = 0, cruise = null;
     const dirBias = rnd() < 0.5 ? (rnd() < 0.5 ? 1 : -1) : 0; // some bursts keep heading one way
     const burst = rnd() < 0.25 ? BURST * 3 : BURST; // now and then a long one: some things take patience
     for (let d = 0; d < burst; d++) {
-      if (hold-- <= 0) { climb = 0; act = randomAct(dirBias); hold = climb || Math.floor(rnd() * rnd() * 14); }
+      // With the jetpack, level flight is a move of its own: head one way and
+      // thrust whenever below a chosen height. Random thrusting only ever
+      // bobs up and down; getting across something at a fixed height (level
+      // 5's arrow strips, which push along the floor and along the ceiling
+      // and leave a gap between) needs the height held for a second or two.
+      if (cruise && cruise.left-- > 0 && g.player.power === 'FLY') {
+        const pl = g.player;
+        act = ACT(cruise.dir, pl.y > cruise.y || pl.vy > 30 ? 1 : 0, 0, enemyNear() && rnd() < 0.5 ? 1 : 0);
+      } else {
+        cruise = null;
+        if (hold-- <= 0) {
+          climb = 0; act = randomAct(dirBias); hold = climb || Math.floor(rnd() * rnd() * 14);
+          if (g.player.power === 'FLY' && rnd() < 0.3) cruise = { left: 8 + Math.floor(rnd() * 40), dir: dirBias || (rnd() < 0.5 ? 1 : -1), y: g.player.y + 6 - rnd() * 45 };
+        }
+      }
       acts.push(act);
       const mv = (act % 3) - 1;
       if (mv !== 0) face = mv;
@@ -313,6 +327,13 @@ async function writeDemo() {
   if (!pieces.length) return levels;
   // The file may hold the older PPO recording: kept beside the search's progress the first time it is replaced.
   try { const old = JSON.parse(await readFile(DEMO_FILE, 'utf8')); if (old.source !== 'search') await copyFile(DEMO_FILE, `${OUT}ppo-demo-before-search.json`); } catch { /* none */ }
+  // the regression test's list of levels that have been won: added to, never taken from (tools/regress.mjs)
+  try {
+    const wonFile = fileURLToPath(new URL('../tests/won-levels.json', import.meta.url));
+    const w = JSON.parse(await readFile(wonFile, 'utf8'));
+    const all = [...new Set([...w.levels, ...levels])].sort((a, b) => a - b);
+    if (all.length !== w.levels.length) await writeFile(wonFile, JSON.stringify({ ...w, levels: all }, null, 2));
+  } catch { /* no list yet */ }
   await writeFile(DEMO_FILE, JSON.stringify({ format: ppo.DEMO_FORMAT, savedAt: new Date().toISOString(), source: 'search', passed: levels, gaveUp: [...gaveUp.keys()], frontier, dist: null, pieces }));
   return levels;
 }
@@ -393,11 +414,12 @@ if (process.argv.includes('--parallel')) {
   const { spawn } = await import('node:child_process');
   const { openSync } = await import('node:fs');
   const jobs = +arg('jobs', 6), upto = +arg('upto', 21);
+  const pick = arg('pick', null)?.split(',').map(Number) ?? null; // --pick 2,3,8: only these levels
   const todo = [];
   for (let lv = 0; lv <= upto; lv++) {
     let done = state.legs.some((l) => l.level === lv);
     if (!done) try { done = JSON.parse(await readFile(levelFile(lv), 'utf8')).solved; } catch { /* not searched */ }
-    if (!done) todo.push(lv);
+    if (!done && (!pick || pick.includes(lv))) todo.push(lv);
   }
   console.log(`searching levels ${todo.join(', ')}: ${jobs} at a time, up to ${PER_LEVEL / 60000} min each`);
   let running = 0;

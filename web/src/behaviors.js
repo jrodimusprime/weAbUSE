@@ -425,9 +425,17 @@ const items = {
     g.sound('ammo');
     return false;
   },
+  // POWER_HEALTH — powerup.lsp health_power_ai: it becomes the player's
+  // special power (taking the place of the jetpack or speed if one is held),
+  // and gives 100 health. While it is the power in hand, health tops out at
+  // 200, not 100 (people.lsp give_player_health).
   health_power_ai(e, g) {
-    if (g.touchesPlayer(e)) { g.player.hp = g.player.maxhp; g.sound('health'); return false; }
-    return true;
+    e.nextPicture();
+    if (!g.touchesPlayer(e)) return true;
+    g.player.power = 'HEALTH';
+    g.giveHealth(100);
+    g.sound('health');
+    return false;
   },
   // duong.lsp lava_ai: 6 damage every 20 ticks to a player standing in it,
   // and now and then (1 tick in 100) it spits: a 20-pixel burst doing up to 20.
@@ -980,13 +988,25 @@ function jugger(e, g) {
       if (!stationary) { e.setState('running'); goState(e, 1); } else if (e.stateTime > (e.aitype || 8)) { e.setState('weapon_fire'); goState(e, 2); }
       break;
     case 1: {
+      // Walk toward the player. The walking comes from the animation: each
+      // frame of the walk carries how far it moves the robot (objects.cpp
+      // frame_advance; 21 px over the 13 frames), and when the cycle ends it
+      // stops to throw. If the step leaves nothing under it within 5 px it
+      // is taken back and the robot drops 10 px where it was: that is how it
+      // comes down to the floor when it is put in mid-air, and why it will
+      // not walk off a ledge.
       e.dir = p.x > e.x ? 1 : -1;
-      const img = g.spriteOf(e);
-      const step = Math.max(2, Math.abs(img?.advance || 3));
       const ox = e.x, oy = e.y;
-      g.moveEntity(e, e.dir * step, 0);
-      if (!g.moveEntity(e, 0, 10).down) { e.x = ox; e.y = oy; }
-      if (!e.nextPicture()) { e.setState('weapon_fire'); goState(e, 2); }
+      const more = e.nextPicture();
+      const ad = g.spriteOf(e)?.advance || 0;
+      if (ad) g.moveEntity(e, e.dir * ad, 0);
+      if (more) { if (Math.floor(e.frame) === 8) g.sound('blkfoot4', e.x, e.y); } else {
+        g.sound('blkfoot4', e.x, e.y);
+        e.setState('weapon_fire'); goState(e, 2);
+      }
+      let floor = false;
+      for (let d = 0; d <= 5 && !floor; d++) for (const dx of [0, -1, 1]) floor ||= g.tileSolid(Math.floor(e.x) + dx, Math.floor(e.y + d)); // (see verticalHits on the 3 px)
+      if (!floor) { e.x = ox; e.y = oy; g.moveEntity(e, 0, 10); }
       break;
     }
     case 2:

@@ -38,8 +38,29 @@ arrows/WASD (move), Space/Up (jump), Down/E (use/action), 1-7 or wheel
 use unused keys (e.g. F-keys) or be button-only. A clash reads as a gameplay
 bug (e.g. pressing D started the demo while moving right).
 
+## RULE 5 (regression): a level that has been won stays won
+Every level that has been completed by a recorded run is a regression test.
+The runs are the ones in `web/data/ppo-demo.json`; the levels are listed in
+`web/tests/won-levels.json`, which is only ever added to.
+
+- **After every commit, run `node web/tools/regress.mjs`** (about half a
+  minute). It replays each winning run in the real game code and fails if any
+  no longer reaches its exit. The post-commit hook in `.githooks/` does this
+  by itself once enabled: `git config core.hooksPath .githooks`.
+- A failure means the game no longer plays as it did when the run was
+  recorded. If that was not intended, it is a bug: fix it.
+- If it was intended (a fidelity fix changes how things move, so old
+  recordings drift), search the affected levels again before pushing:
+  `node web/tools/search.mjs --recheck && node web/tools/search.mjs --parallel`.
+- **Do not push with the regression failing**, and never take a level off the
+  won list to make it pass.
+
 ## Project notes
 - Web port lives in `web/` (plain ES modules, no build step).
 - Serve with `cd web && python3 -m http.server 8000` → http://localhost:8000/
-- `python3 -m http.server` + Chromium cache ES modules heuristically: after editing
-  `web/src` do a hard reload (`Cmd+Shift+R`) or the browser runs stale code.
+- `web/index.html` loads every script through an import map with a fresh
+  `?v=` stamp, so a plain reload always runs the current code. A new file in
+  `web/src/` must be added to the `FILES` list there.
+- Tools (all run the real game headlessly, `node web/tools/<name>.mjs`):
+  `regress` (Rule 5), `audit` (works every wired puzzle, lift, teleporter and
+  exit), `search` (finds and records a route through each level).

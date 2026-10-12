@@ -1,0 +1,21 @@
+{
+  "note": "Levels that have been won by a recorded run. tools/search.mjs adds to this; a level is never taken off. See tools/regress.mjs.",
+  "levels": [
+    0,
+    1,
+    2,
+    3,
+    4,
+    6,
+    7,
+    8,
+    9,
+    12,
+    14,
+    17,
+    18,
+    19,
+    20,
+    21
+  ]
+}

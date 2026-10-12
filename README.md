@@ -55,6 +55,22 @@ does something else on purpose. They are not bugs, and they should not be
   shaft you fell down. Here, once you have picked up the jetpack, that door
   opens again and stays open.
 
+## Tests
+
+Every level that has been completed by a recorded run is a regression test:
+
+```sh
+node web/tools/regress.mjs
+```
+
+It replays each winning run (the ones the Demo button plays) in the real game
+code and fails if any no longer reaches its exit. It is a project rule that
+this runs after every commit and passes before anything is pushed; enable the
+hook that does it with `git config core.hooksPath .githooks`.
+
+`node web/tools/audit.mjs` works every wired puzzle, lift, teleporter and exit
+in all 22 levels.
+
 ## How it works
 
 - `web/src/spec.js` reads the `SPEC1.0` archives and decodes images, tiles and sprites.

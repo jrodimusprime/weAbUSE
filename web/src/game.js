@@ -180,6 +180,10 @@ export class Game {
 
   async start(file) {
     const level = await loadLevel(file);
+    // people.lsp set_player_defaults, run for the player whenever a level is
+    // loaded: the special power in hand (jetpack, speed, ...) is not carried
+    // into the next level. Weapons and ammunition are.
+    if (this.player) this.player.power = null;
     const types = new Set(level.objects.map((o) => o.type));
     EXTRA_DEFS.forEach((t) => types.add(t));
     await Promise.all([...types].map((t) => this.assets.preloadDef(this.assets.defs.get(t))));
@@ -406,7 +410,11 @@ export class Game {
   verticalHits(e, y, hw, bh, down) {
     const cx = Math.floor(e.x);
     const edge = Math.floor(down ? y : y - bh + 1);
-    if (this.tileSolid(cx, edge)) return true;
+    // (Three pixels wide, not one: some floor tiles' outlines stop a pixel
+    // short of the tile's edge, which leaves a one-pixel slit between two of
+    // them. An object standing exactly over one would drop through the floor;
+    // level 4 has a juggernaut placed just so.)
+    if (this.tileSolid(cx, edge) || this.tileSolid(cx - 1, edge) || this.tileSolid(cx + 1, edge)) return true;
     for (const s of this.solids) {
       if (s.e === e) continue;
       if (e.x + hw >= s.x0 && e.x - hw <= s.x1 && edge >= s.y0 && edge <= s.y1) return true;
@@ -452,6 +460,21 @@ export class Game {
       if (SOLID_AI.has(e.ai) && e.state === 'blocking') continue;
       // can_block objects (BLOCK, STEP, ROB1...) use per-frame art: states like
       // "step_gone" / "rob_hiding" draw an empty frame and don't block.
+      // A teleporter pad is something to stand on in every state: many are
+      // saved in the level with their electricity running, and some hang in
+      // mid-air as the only footing where another teleporter drops the
+      // player (level 14). Its outline is the pad itself, 15 px up from its
+      // base, which is why tp2_ai sets an arriving player down at y - 16.
+      if (e.ai === 'tp2_ai') {
+        const pad = this.assets.sprite(e.def.file, e.def.states.get('stopped')[0]);
+        const b = pad?.boundary;
+        if (b && b.length >= 3) {
+          const xs = b.map((q) => q[0]), ys = b.map((q) => q[1]);
+          const left = e.x - pad.xcfg, top = e.y - pad.h + 1;
+          this.solids.push({ x0: left + Math.min(...xs), x1: left + Math.max(...xs), y0: top + Math.min(...ys), y1: top + Math.max(...ys), e });
+        }
+        continue;
+      }
       if (canBlock && !SOLID_AI.has(e.ai) && (e.state === 'running' || e.state === 'dieing' || e.state === 'rob_hiding')) continue;
       // lifts, boulders and the cleaner robot block with their boundary outline, not the whole picture
       const r = e.ai === 'platform_ai' || e.ai === 'bolder_ai' || e.ai === 'rob1_ai' ? this.deckRect(e) : this.rectOf(e);
@@ -639,10 +662,17 @@ export class Game {
     this.toast('Checkpoint saved');
   }
 
+  // people.lsp give_player_health: the amount is cut by difficulty (in full
+  // on easy, 3/4 on medium, half on hard, a fifth on extreme), and health
+  // stops at 100, or at 200 while the health power is the one in hand. At
+  // exactly that ceiling nothing is taken.
   giveHealth(n) {
     const p = this.player;
-    if (p.hp >= p.maxhp || p.dead) return false;
-    p.hp = Math.min(p.maxhp, p.hp + n);
+    if (p.dead) return false;
+    const max = p.power === 'HEALTH' ? 200 : 100;
+    const amount = { easy: n, medium: Math.trunc((n * 3) / 4), hard: Math.trunc(n / 2), extreme: Math.trunc(n / 5) }[this.difficulty] ?? n;
+    if (p.hp === max) return false;
+    p.hp = p.hp + amount <= max ? p.hp + amount : max;
     return true;
   }
 
