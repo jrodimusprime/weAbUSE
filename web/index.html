@@ -76,6 +76,25 @@
     </div>
     <div id="help">arrows/WASD move, Space/Up jump, Down/E use switch, mouse aim, click/F fire, 1-7 or wheel weapons, right mouse special power, L lights, G god mode</div>
   </div>
-  <script type="module" src="./src/main.js"></script>
+  <script>
+    // Always run the current code. A plain file server (python3 -m http.server)
+    // lets the browser keep old copies of the game's script files, and after an
+    // update the page then runs a mix of old and new ones: a new button that
+    // does nothing, an empty level list. So every script is asked for under an
+    // address that is new on each load of the page, by way of an import map.
+    // (When a file is added to src/, add it to this list.)
+    const FILES = ['assets', 'audio', 'behaviors', 'bot', 'demo', 'entity', 'game', 'level', 'lighting', 'lisp', 'main', 'ppo', 'renderer', 'spec', 'weapons'];
+    const stamp = Date.now();
+    const imports = {};
+    for (const f of FILES) imports[new URL(`./src/${f}.js`, location.href).href] = new URL(`./src/${f}.js?v=${stamp}`, location.href).href;
+    const map = document.createElement('script');
+    map.type = 'importmap';
+    map.textContent = JSON.stringify({ imports });
+    document.currentScript.after(map);
+    const main = document.createElement('script');
+    main.type = 'module';
+    main.src = `./src/main.js?v=${stamp}`;
+    map.after(main);
+  </script>
 </body>
 </html>
