@@ -1229,6 +1229,17 @@ function chooseWeapon(g, target, wall) {
 }
 
 // Applies an action through the same input fields the human/bot use.
+// Whether a solid object (a door, a wired wall, a lift) lies on the straight
+// line between two points; `skip` is the thing being looked at.
+function behindSolid(g, x1, y1, x2, y2, skip) {
+  const n = Math.max(1, Math.ceil(Math.hypot(x2 - x1, y2 - y1) / 4));
+  for (let i = 1; i < n; i++) {
+    const x = x1 + ((x2 - x1) * i) / n, y = y1 + ((y2 - y1) * i) / n;
+    for (const s of g.solids) if (s.e !== skip && !g.around.has(s.e) && x >= s.x0 && x <= s.x1 && y >= s.y0 && y <= s.y1) return true;
+  }
+  return false;
+}
+
 export function applyAction(g, act, faceDir = 1) {
   const { move, jump, down, fire } = actParts(act);
   g.keys.clear();
@@ -1291,17 +1302,24 @@ export function applyAction(g, act, faceDir = 1) {
   // to activate"): they hang out of reach, often overhead, and nothing else
   // makes the agent aim anywhere but straight ahead. Within the machine
   // gun's range (its bullet flies about 170 px).
+  // A ball in clear view comes before an enemy that is behind a door, a wired
+  // wall or some other solid object: sight is judged by the level's walls
+  // alone, so the "nearest visible enemy" is often a turret under the very
+  // floor the ball is there to open (level 15), and the aim would sit on it
+  // for ever.
   let wall = null;
-  if (!target) {
+  {
     // (...or, carrying rockets, a good deal further: chooseWeapon takes the
     // rocket launcher to anything out of the gun's reach)
+    let ball = null;
     best = (p.owned.has('ROCKET') && (p.ammo.ROCKET || 0) > 0) ? 420 : 170;
     for (const e of g.entities) {
       if (e.dead || e.type !== 'SWITCH_BALL' || e.aistate !== 0) continue;
       const d = Math.hypot(e.x - p.x, e.y - 8 - (p.y - 15));
-      if (d >= best || !g.sees(p.x, p.y - 15, e.x, e.y - 8)) continue;
-      best = d; wall = { x: e.x, y: e.y - 8 };
+      if (d >= best || !g.sees(p.x, p.y - 15, e.x, e.y - 8) || behindSolid(g, p.x, p.y - 15, e.x, e.y - 8, e)) continue;
+      best = d; ball = { x: e.x, y: e.y - 8 };
     }
+    if (ball && (!target || behindSolid(g, p.x, p.y - 15, target.x, target.y - 15, target))) { target = null; wall = ball; }
   }
   if (!target && !wall) {
     best = Infinity;
