@@ -224,6 +224,18 @@ game.onGod = (on) => {
 };
 game.onLevel = (name) => { select.value = name; };
 // (help text is drawn by the game itself, in its own font)
+// Mute: silences the game's sounds; remembered between visits.
+const muteBtn = document.getElementById('mute');
+const setMuted = (on) => {
+  game.audio.userMuted = on;
+  muteBtn.textContent = on ? 'Unmute' : 'Mute';
+  muteBtn.classList.toggle('on', on);
+  try { localStorage.setItem('abuse.muted', on ? '1' : '0'); } catch { /* storage unavailable: just not remembered */ }
+};
+let wasMuted = false;
+try { wasMuted = localStorage.getItem('abuse.muted') === '1'; } catch { /* storage unavailable */ }
+setMuted(wasMuted);
+muteBtn.addEventListener('click', () => { setMuted(!game.audio.userMuted); muteBtn.blur(); });
 const coordsBtn = document.getElementById('coords');
 coordsBtn.addEventListener('click', () => {
   game.showCoords = !game.showCoords;

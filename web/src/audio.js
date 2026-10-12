@@ -12,6 +12,7 @@ export class Audio {
   constructor() {
     this.ctx = null;
     this.muted = false; // set while training so the sim runs silently
+    this.userMuted = false; // the page's Mute button (kept apart from the trainer's own muting)
     this.buffers = new Map();
     const unlock = () => {
       this.ctx ??= new AudioContext();
@@ -32,7 +33,7 @@ export class Audio {
 
   // `at` is the source position relative to the listener, or null for non-positional sounds.
   async play(name, at, volume = 1) {
-    if (this.muted) return;
+    if (this.muted || this.userMuted) return;
     if (!this.ctx || this.ctx.state !== 'running') return;
     const buf = await this.load(name);
     if (!buf) return;
