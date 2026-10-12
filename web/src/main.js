@@ -227,7 +227,12 @@ game.onLevel = (name) => { select.value = name; };
 // Mute: silences the game's sounds; remembered between visits.
 const muteBtn = document.getElementById('mute');
 const setMuted = (on) => {
+  // (Both ways of saying it: an older copy of audio.js still held in the
+  // browser's cache knows only `muted`, and would otherwise play on while
+  // the button says it is muted.)
   game.audio.userMuted = on;
+  game.audio.muted = on;
+  game.audio.setUserMuted?.(on);
   muteBtn.textContent = on ? 'Unmute' : 'Mute';
   muteBtn.classList.toggle('on', on);
   try { localStorage.setItem('abuse.muted', on ? '1' : '0'); } catch { /* storage unavailable: just not remembered */ }

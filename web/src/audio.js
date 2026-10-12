@@ -46,7 +46,24 @@ export class Audio {
     gain.gain.value = vol * 0.6 * volume;
     const pan = this.ctx.createStereoPanner();
     pan.pan.value = at ? Math.max(-1, Math.min(1, at.dx / 300)) : 0;
-    src.connect(gain).connect(pan).connect(this.ctx.destination);
+    src.connect(gain).connect(pan).connect(this.out());
     src.start();
+  }
+
+  // Everything goes out through one volume control, so that muting also
+  // cuts off whatever is already playing.
+  out() {
+    if (!this.master) {
+      this.master = this.ctx.createGain();
+      this.master.gain.value = this.userMuted ? 0 : 1;
+      this.master.connect(this.ctx.destination);
+    }
+    return this.master;
+  }
+
+  // The page's Mute button.
+  setUserMuted(on) {
+    this.userMuted = on;
+    if (this.master) this.master.gain.value = on ? 0 : 1;
   }
 }

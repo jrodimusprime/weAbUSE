@@ -1693,7 +1693,7 @@ export class PpoTrainer {
     this.replay = null;
     this.showDue = false;
     this.g.renderThrottle = 0;
-    this.g.audio.muted = false; // restore sound after training
+    this.g.audio.muted = !!this.g.audio.userMuted; // restore sound after training (unless the page's Mute is on)
     const g = this.g;
     g.autoPause = false;
     g.demo = false;
