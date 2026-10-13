@@ -59,6 +59,11 @@ export function stopDemo() {
   g.rightDown = false;
   g.nextLevel = a.oldNextLevel;
   g.onEndGame = a.oldOnEndGame;
+  // A recording that ends at an exit leaves the game marked as "changing
+  // level" (that is how the demo catches the exit without loading the next
+  // level). Left set, the exit would ignore the player for the rest of the
+  // session: pressing Down at it would do nothing.
+  g.transitioning = false;
   g.onLevel = a.oldOnLevel;
   g.onDemoStop = null;
   a.select.disabled = false;
