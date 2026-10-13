@@ -1,7 +1,7 @@
 import { Game } from './game.js';
 import { WEAPON_ORDER } from './weapons.js';
 import { readPalette, T } from './spec.js';
-import { LEVELS, toggleFullGameDemo, loadDemoFile, stopDemo, demoRunning, toggleDemoPause } from './demo.js';
+import { LEVELS, toggleFullGameDemo, toggleLevelDemo, loadDemoFile, stopDemo, demoRunning, toggleDemoPause } from './demo.js';
 import { PpoTrainer, loadCampaign, saveCampaign, saveStations, forgetTraining, CAMPAIGN_KEY, STATIONS_KEY } from './ppo.js';
 
 const select = document.getElementById('level');
@@ -17,6 +17,7 @@ const ppoBtn = document.getElementById('ppo');
 const ppoStatus = document.getElementById('ppoStatus');
 const pauseBtn = document.getElementById('pause');
 const fullGameBtn = document.getElementById('fullGame');
+const playLevelBtn = document.getElementById('playLevel');
 const forgetBtn = document.getElementById('forget');
 const showEverySel = document.getElementById('showEvery');
 let ppoTrainer = null;
@@ -81,6 +82,12 @@ fullGameBtn.addEventListener('click', async () => {
   stopTraining();
   fullGameBtn.blur();
   await toggleFullGameDemo(game, fullGameBtn, select);
+  refreshPauseDemo();
+});
+playLevelBtn.addEventListener('click', async () => {
+  stopTraining();
+  playLevelBtn.blur();
+  await toggleLevelDemo(game, playLevelBtn, select);
   refreshPauseDemo();
 });
 // Show intro: the opening story; when it is over (or a key or click cuts it short) the game starts at level 00.

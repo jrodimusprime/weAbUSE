@@ -4,7 +4,7 @@ import { Assets } from './assets.js';
 import { loadLevel } from './level.js';
 import { Entity } from './entity.js';
 import { behaviors, LOGIC_AI, SOLID_AI, isHiddenInPlay } from './behaviors.js';
-import { WEAPONS, WEAPON_ORDER, firePlayer, updateProjectiles, drawProjectiles, SMALL_FIRE_OFF, LARGE_FIRE_OFF } from './weapons.js';
+import { WEAPONS, WEAPON_ORDER, firePlayer, updateProjectiles, drawProjectiles, hurtRocketsInBlast, SMALL_FIRE_OFF, LARGE_FIRE_OFF } from './weapons.js';
 import { Audio } from './audio.js';
 import { LightMap } from './lighting.js';
 
@@ -644,6 +644,9 @@ export class Game {
         const d = Math.hypot(e.x - x, e.y - 10 - y);
         if (d < radius) this.damage(e, Math.max(1, ((radius - d) * dmg) / radius));
       }
+      // Enemy homing rockets are hurtable (weapons.lsp): hurt_radius reaches
+      // them too, so a blast destroys any rocket it catches.
+      hurtRocketsInBlast(this, x, y, radius, dmg);
     }
     if (sparePlayer) return; // hurt_radius with the player as its excluded object
     const p = this.player;

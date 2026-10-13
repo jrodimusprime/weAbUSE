@@ -129,7 +129,7 @@ export function enemyFire(g, type, x, y, angle) {
   } else if (type === 3) {
     // rocket_ai: starts at speed 5, gains 2 a tick up to 10 (14 for the
     // player's), turns up to 23 degrees a tick towards its target
-    g.projs.push({ ...base, kind: 'rocket', vx: c * 5, vy: s * 5, life: 90, dmg: 50, radius: 40, def: 'ROCKET', smoke: 0, homing: true, speed: 5, angDeg: ((angle % 360) + 360) % 360 });
+    g.projs.push({ ...base, kind: 'rocket', vx: c * 5, vy: s * 5, life: 90, dmg: 50, radius: 40, def: 'ROCKET', smoke: 0, homing: true, speed: 5, angDeg: ((angle % 360) + 360) % 360, hp: 4 });
     g.sound('rocket', x, y);
   } else if (type === 4) {
     g.projs.push({ ...base, kind: 'plasma', vx: c * 34, vy: s * 34, life: 20, dmg: 10 });
@@ -159,20 +159,56 @@ function hitAt(g, b) {
       const r = g.rectOf(e);
       if (r && b.x >= r.x0 && b.x <= r.x1 && b.y >= r.y0 && b.y <= r.y1) return { entity: e };
     }
+    // A rocket is hurtable in the original (weapons.lsp ROCKET: hurtable,
+    // start_hp 4), so the player's fire can shoot an enemy's down.
+    for (const q of g.projs) {
+      if (q === b || q.dead || q.mine || !isRocket(q)) continue;
+      if (Math.hypot(q.x - b.x, q.y - b.y) < 9) return { rocket: q };
+    }
   } else {
     const r = g.playerRect();
     if (b.x >= r.x0 && b.x <= r.x1 && b.y >= r.y0 && b.y <= r.y1) return { player: true };
+    // ...and the same the other way: the player's rockets are the same
+    // ROCKET, and an enemy's shot can bring one down.
+    for (const q of g.projs) {
+      if (q === b || q.dead || !q.mine || !isRocket(q)) continue;
+      if (Math.hypot(q.x - b.x, q.y - b.y) < 9) return { rocket: q };
+    }
   }
   return null;
 }
 
 function detonate(g, b) {
-  g.explode(b.x, b.y, b.radius, b.dmg, b.mine);
+  if (b.dead) return;
   b.dead = true;
+  g.explode(b.x, b.y, b.radius, b.dmg, b.mine);
+}
+
+// Which projectiles are the original's ROCKET (weapons.lsp: hurtable, start_hp
+// 4): the player's rockets and the homing ones enemies fire. The flyer's
+// STRAIT_ROCKET (ant.lsp) is a different object, not hurtable.
+const isRocket = (q) => q.kind === 'rocket' && !q.straight;
+
+// weapons.lsp ROCKET is hurtable with start_hp 4: a direct hit reduces its hp,
+// and at 0 it blows (rocket_ai: do_explo, with its own radius and damage).
+function damageRocket(g, q, amount) {
+  q.hp = Math.max(0, (q.hp ?? 4) - amount);
+  if (q.hp <= 0) detonate(g, q);
+}
+// hurt_radius (level.cpp) damages every hurtable object in a blast, whoever
+// set it off; rockets are hurtable, so an explosion destroys any it catches,
+// the player's own included.
+export function hurtRocketsInBlast(g, x, y, radius, dmg) {
+  for (const q of g.projs) {
+    if (q.dead || !isRocket(q)) continue;
+    const d = Math.hypot(q.x - x, q.y - y);
+    if (d < radius) damageRocket(g, q, Math.max(1, ((radius - d) * dmg) / radius));
+  }
 }
 
 export function updateProjectiles(g) {
   for (const b of g.projs) {
+    if (b.dead) continue; // (shot down or caught in a blast earlier this tick)
     b.px = b.x; b.py = b.y;
     const bullet = b.kind === 'bullet';
     if (bullet) {
@@ -229,6 +265,9 @@ export function updateProjectiles(g) {
         } else if (hit.player) {
           g.effect('EXPLODE3', b.x + g.rand(4), b.y + g.rand(4));
           g.hurtPlayer(b.dmg);
+        } else if (hit.rocket) {
+          g.effect('EXPLODE3', b.x + g.rand(4), b.y + g.rand(4));
+          damageRocket(g, hit.rocket, b.dmg);
         } else {
           g.effect('EXPLODE3', b.x + g.rand(4), b.y + g.rand(4));
           const a = b.angDeg * Math.PI / 180;
@@ -237,7 +276,8 @@ export function updateProjectiles(g) {
         b.dead = true;
         break;
       }
-      if (hit.entity) g.damage(hit.entity, b.dmg, b);
+      if (hit.rocket) damageRocket(g, hit.rocket, b.dmg);
+      else if (hit.entity) g.damage(hit.entity, b.dmg, b);
       if (hit.player) g.hurtPlayer(b.dmg);
       g.effect(b.mine ? 'EXPLODE6' : 'EXPLODE7', b.x, b.y);
       b.dead = true;

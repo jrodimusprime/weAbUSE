@@ -359,6 +359,17 @@ function switchLocked(e, depth = 0, seen = new Set()) {
   return false;
 }
 const LOCKABLE_AI = new Set(['sdoor_ai', 'strap_door_ai', 'ff_ai']);
+// A two-way switch that the level starts with switched ON and that holds a
+// force field or a bank of pushers up (doors.lsp ff_ai, general.lsp
+// pusher_ai: both run while their first link is on): the thing to do with it
+// is the opposite of every other switch, turn it off. Level 10 opens behind
+// two of these. Only switches that start on count: one that starts off and
+// would bring pushers on as a side effect (level 5's) is an ordinary switch.
+function wantedOff(g, e) {
+  if (e.ai !== 'switcher_ai' || !(g.level.objects[e.id]?.aistate)) return false;
+  if (e.a.wantedOff === undefined) e.a.wantedOff = g.entities.some((o) => (o.ai === 'ff_ai' || o.ai === 'pusher_ai') && o.links[0] === e);
+  return e.a.wantedOff;
+}
 // The keys still to be dealt with: switches that are off, and creatures a
 // death sensor is waiting on.
 function keysToGo(g) {
@@ -368,6 +379,7 @@ function keysToGo(g) {
     // (A switch ball is set off by shooting it. A timed switch is left out:
     // it goes off again by itself, so it would be "still to do" for ever and
     // the compass would keep calling the player back to press it.)
+    if (wantedOff(g, e)) { if (e.aistate !== 0) out.push(e); continue; } // done once it is off; not to be turned on again
     if (e.aistate === 0 && e.ai !== 'switch_delay_ai' && (SWITCH_AI.has(e.ai) || e.type === 'SWITCH_BALL')) out.push(e);
     else if (e.ai === 'death_sen_ai' && e.aistate === 0) for (const l of e.links) if (!l.dead && !out.includes(l)) out.push(l);
   }
@@ -1268,9 +1280,12 @@ export function applyAction(g, act, faceDir = 1) {
   }
   // The same goes for a two-way switch that is already on: pressing it again
   // turns it off and shuts whatever it opened. The agent leaves switches on.
+  // (For a switch that is wanted off, see wantedOff, it is the other way
+  // about: free to press while it is on, left alone once it is off.)
   let switchLock = false;
   for (const e of g.entities) {
-    if (e.ai !== 'switcher_ai' || e.aistate !== 2 || e.dead) continue;
+    if (e.ai !== 'switcher_ai' || e.dead) continue;
+    if (wantedOff(g, e) ? e.aistate !== 0 : e.aistate !== 2) continue;
     // a little wider than the switch's own reach (20 x 30): the player moves between decisions
     if (Math.abs(g.player.x - e.x) < 34 && Math.abs(g.player.y - e.y) < 44) { switchLock = true; break; }
   }

@@ -166,3 +166,17 @@ export async function toggleFullGameDemo(game, btn, select) {
   if (active) return; // started twice while the file loaded
   playPieces(game, btn, select, pieces);
 }
+
+// Plays the demo for just the level chosen in `select`: the recording's pieces
+// whose levelIdx is that level (or the browser-trained campaign's, when there
+// is no committed recording file).
+export async function toggleLevelDemo(game, btn, select) {
+  if (active) { stopDemo(); return; }
+  const idx = LEVELS.indexOf(select.value);
+  if (idx < 0) { game.toast('No such level'); return; }
+  const file = await loadDemoFile();
+  const pieces = (file ? file.pieces : campaignPieces()).filter((p) => p.levelIdx === idx);
+  if (!pieces.length) { game.toast(`No demo recording for ${select.value}`); return; }
+  if (active) return; // started twice while the file loaded
+  playPieces(game, btn, select, pieces);
+}
