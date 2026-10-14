@@ -331,6 +331,7 @@ export function pathDistStep(g, nextNum = null) {
 }
 
 const DOOR_AI = new Set(['sdoor_ai', 'strap_door_ai']);
+const WALL_AI = new Set(['hwall_ai', 'big_wall_ai']);
 // Switches the player works with the action key. Off (aistate 0) until used.
 const SWITCH_AI = new Set(['switcher_ai', 'switch_once_ai', 'switch_delay_ai']);
 // Obstacles the player can get through: doors (opened by a switch or sensor)
@@ -358,7 +359,20 @@ function switchLocked(e, depth = 0, seen = new Set()) {
   }
   return false;
 }
-const LOCKABLE_AI = new Set(['sdoor_ai', 'strap_door_ai', 'ff_ai']);
+// (A hidden wall wired to something cannot be shot until that something is
+// on, doors.lsp hwall_damage, so a wired wall a switch works is locked too.)
+const LOCKABLE_AI = new Set(['sdoor_ai', 'strap_door_ai', 'ff_ai', 'hwall_ai', 'big_wall_ai']);
+// The sensors a wired wall's gates are waiting on, not yet tripped: places the
+// player has to go and stand. Level 15's last walls blow only when switch 11
+// is on and the player is at the sensor by the gates (an AND, then a latch).
+function wallSensors(e, out, depth = 0, seen = new Set()) {
+  for (const l of e.links) {
+    if (seen.has(l)) continue;
+    seen.add(l);
+    if (l.ai === 'sensor_ai') { if (l.aistate === 0 && !out.includes(l)) out.push(l); }
+    else if (depth < 8 && GATE_AI.has(l.ai)) wallSensors(l, out, depth + 1, seen);
+  }
+}
 // A two-way switch that the level starts with switched ON and that holds a
 // force field or a bank of pushers up (doors.lsp ff_ai, general.lsp
 // pusher_ai: both run while their first link is on): the thing to do with it
@@ -404,6 +418,7 @@ function keysToGo(g) {
     // it goes off again by itself, so it would be "still to do" for ever and
     // the compass would keep calling the player back to press it.)
     if (wantedOff(g, e)) { if (e.aistate !== 0) out.push(e); continue; } // done once it is off; not to be turned on again
+    if (WALL_AI.has(e.ai) && e.links.length && e.links[0].aistate === 0) { wallSensors(e, out); continue; }
     if (e.aistate === 0 && e.ai !== 'switch_delay_ai' && (SWITCH_AI.has(e.ai) || e.type === 'SWITCH_BALL')) out.push(e);
     else if (e.ai === 'death_sen_ai' && e.aistate === 0 && opensWay(g, e)) for (const l of e.links) if (!l.dead && !out.includes(l)) out.push(l);
   }
@@ -1458,7 +1473,6 @@ const INTERACT_AI = new Set([
 ]);
 
 // Breakable walls (original: "Shoot hidden walls to destroy them", wall() explodes at hp<=0).
-const WALL_AI = new Set(['hwall_ai', 'big_wall_ai']);
 
 // ---- best-run state checkpointing: the next run starts from the exact state
 // where the best run ended (player + entities + doors/switches), instead of
