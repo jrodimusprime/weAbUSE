@@ -348,6 +348,6 @@ panel.addEventListener('mousemove', (e) => { hover = barSlotAt(e.clientX); });
 panel.addEventListener('mouseleave', () => { hover = -1; });
 panel.addEventListener('click', (e) => { const slot = barSlotAt(e.clientX); if (slot >= 0) game.selectWeapon(WEAPON_ORDER[slot]); });
 
-select.addEventListener('change', () => { select.blur(); game.start(select.value); });
+select.addEventListener('change', () => { select.blur(); if (game.level) game.start(select.value); }); // (before the first level is up, the start below picks the choice up)
 await game.showTitle(5000); // the title screen, for five seconds, before the first level
-await game.start(LEVELS[0]);
+await game.start(select.value || LEVELS[0]); // (whatever is chosen in the list by then: a level picked during the title screen is not overridden)
