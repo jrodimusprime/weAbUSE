@@ -510,8 +510,14 @@ export class Game {
         continue;
       }
       if (canBlock && !SOLID_AI.has(e.ai) && (e.state === 'running' || e.state === 'dieing' || e.state === 'rob_hiding')) continue;
-      // lifts, boulders and the cleaner robot block with their boundary outline, not the whole picture
-      const r = e.ai === 'platform_ai' || e.ai === 'bolder_ai' || e.ai === 'rob1_ai' ? this.deckRect(e) : this.rectOf(e);
+      // Lifts, boulders, the cleaner robot and turrets block with their
+      // boundary outline, not the whole picture (level.cpp
+      // all_boundary_setback tests the current figure's damage boundary).
+      // Level 15's turrets hang low over a passage: by the picture they shut
+      // it, by the outline the player passes under with 2 px to spare. (The
+      // original does this for every can_block object; the rest still use
+      // the picture here, because the demo's routes were found that way.)
+      const r = e.ai === 'platform_ai' || e.ai === 'bolder_ai' || e.ai === 'rob1_ai' || e.ai === 'track_ai' ? this.deckRect(e) : this.rectOf(e);
       if (r) this.solids.push({ ...r, e });
     }
   }

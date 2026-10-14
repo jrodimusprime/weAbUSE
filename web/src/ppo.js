@@ -689,7 +689,7 @@ export function navGraph(g, nextNum) {
     const js = jumpTo.get(cur);
     if (js) for (const j of js) relax(j.to % W, Math.floor(j.to / W), j.cost, 'ride');
   };
-  return { W, H, N, grid, goals, expand, cellOf, floorOK, bodyOK, jumpTo, locked };
+  return { W, H, N, grid, goals, expand, cellOf, floorOK, bodyOK, standCells, jumpTo, locked };
 }
 
 // Binary min-heap of (distance, cell) pairs; stale entries are skipped by the caller.
@@ -807,23 +807,39 @@ function navSig(g, nextNum) {
   return s;
 }
 
+// How far a shot carries with the weapons the player has ammunition for: the
+// machine gun's bullet about 180 px (speed 15, 6/5 faster every tick, six
+// ticks: sgun_ai), a rocket a good deal further, plasma 34 px a tick for 20
+// ticks (weapons.js, after guns.lsp).
+function ballReach(g) {
+  const p = g.player, has = (w) => p.owned?.has(w) && (p.ammo?.[w] || 0) > 0;
+  return has('PGUN') ? 600 : has('ROCKET') ? 420 : 170;
+}
 // Where a switch ball can be shot from. It is set off by a shot, not by
 // walking up to it, and the place to make for is somewhere to stand that sees
 // it within the machine gun's reach (applyAction aims at it from there). Its
 // own cell can be a long way from any of those: level 15's third ball hangs
 // at the end of a slanting slit, seen only from a ledge that is reached from
 // above, while the nearest place to stand is a teleporter pad under the slit.
-function shotCells(g, e, W, H, floorOK, bodyOK) {
-  const tw = g.tw, th = g.th, bx = e.x, by = e.y - 8, R = 165;
+// (Standing, or at the top of a jump; from a lift's stops too. Level 15's
+// ball is otherwise seen only from a ledge that cannot be got onto: from the
+// top of the lift beside it, a jump looks straight down the slit.)
+function shotCells(g, e, W, H, floorOK, bodyOK, standCells) {
+  const tw = g.tw, th = g.th, bx = e.x, by = e.y - 8, R = ballReach(g) - 5;
   const out = [];
   const c0 = Math.max(0, Math.floor((bx - R) / tw)), c1 = Math.min(W - 1, Math.floor((bx + R) / tw));
-  const r0 = Math.max(0, Math.floor((by - R) / th)), r1 = Math.min(H - 1, Math.floor((by + R + 15) / th));
+  const r0 = Math.max(0, Math.floor((by - R) / th)), r1 = Math.min(H - 1, Math.floor((by + R + 15 + JUMP_REACH) / th));
   for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) {
-    if (!floorOK(c, r) || !bodyOK(c, r)) continue;
-    const eye = r * th - 15;
-    for (const px of [c * tw + 2, c * tw + tw / 2, (c + 1) * tw - 2]) {
-      if (Math.hypot(bx - px, by - eye) < R && g.sees(px, eye, bx, by)) { out.push(r * W + c); break; }
+    if ((!floorOK(c, r) && !standCells.has(r * W + c)) || !bodyOK(c, r)) continue;
+    let ok = false;
+    for (const lift of [0, 25, JUMP_REACH]) {
+      const eye = r * th - 15 - lift;
+      for (const px of [c * tw + 2, c * tw + tw / 2, (c + 1) * tw - 2]) {
+        if (Math.hypot(bx - px, by - eye) < R && g.sees(px, eye, bx, by)) { ok = true; break; }
+      }
+      if (ok) break;
     }
+    if (ok) out.push(r * W + c);
   }
   return out;
 }
@@ -847,11 +863,11 @@ function sensorCells(g, e, W, H, floorOK, bodyOK) {
   }
   return out;
 }
-const spotsFor = (g, e, W, H, floorOK, bodyOK) => (isBall(e) ? shotCells(g, e, W, H, floorOK, bodyOK)
+const spotsFor = (g, e, W, H, floorOK, bodyOK, standCells) => (isBall(e) ? shotCells(g, e, W, H, floorOK, bodyOK, standCells)
   : e.ai === 'sensor_ai' ? sensorCells(g, e, W, H, floorOK, bodyOK) : []);
 
 function buildField(g, nextNum) {
-  const { W, H, N, grid, goals, expand, cellOf, floorOK, bodyOK, locked } = navGraph(g, nextNum);
+  const { W, H, N, grid, goals, expand, cellOf, floorOK, bodyOK, standCells, locked } = navGraph(g, nextNum);
   const field = new Float64Array(N).fill(Infinity);
   field.grid = grid;
   field.locked = locked;
@@ -900,7 +916,7 @@ function buildField(g, nextNum) {
   field.walkTo = (objects) => {
     const d = new Float64Array(N).fill(Infinity);
     for (const o of objects) {
-      const spots = spotsFor(g, o, W, H, floorOK, bodyOK);
+      const spots = spotsFor(g, o, W, H, floorOK, bodyOK, standCells);
       if (spots.length) for (const c of spots) d[c] = 0;
       else { const c = cellOf(o); if (c !== null) d[c] = 0; }
     }
@@ -917,7 +933,7 @@ function buildField(g, nextNum) {
 // cost, and through teleporters. It still bends around the level's geometry,
 // which a straight line to the exit does not.
 function buildFlood(g, nextNum, targets = null) {
-  const { W, H, N, grid, goals: walkGoals, cellOf, floorOK, bodyOK } = navGraph(g, nextNum);
+  const { W, H, N, grid, goals: walkGoals, cellOf, floorOK, bodyOK, standCells } = navGraph(g, nextNum);
   const tw = g.tw, th = g.th;
   const flood = new Float64Array(N).fill(Infinity);
   const cellAt = (x, y) => {
@@ -939,7 +955,7 @@ function buildFlood(g, nextNum, targets = null) {
   const stowed = stowedPlaces(g);
   const at = (e) => stowed.get(e) || e;
   const seeds = (targets || goals).flatMap((e) => {
-    const spots = targets ? spotsFor(g, e, W, H, floorOK, bodyOK) : [];
+    const spots = targets ? spotsFor(g, e, W, H, floorOK, bodyOK, standCells) : [];
     return spots.length ? spots.map((f) => f - W) : [bodyCell(at(e))];
   });
   if (!targets) for (const f of walkGoals) if (f >= W) seeds.push(f - W); // where the walking graph stands to exit
@@ -1056,6 +1072,7 @@ export function switchDist(g) {
   // (switches still off, and creatures a death sensor is waiting on)
   let off = keysToGo(g), key = '';
   for (const e of off) key += `${e.id},`;
+  if (off.some(isBall)) key += `r${ballReach(g)}`; // (where a ball can be shot from depends on the weapons)
   if (!off.length) off = null;
   if (!off) return { dist: Infinity, key: '', nearest: null, off: 0 };
   // one pair of fields per set of switches still off (kept: switches get pressed in the same few orders)
@@ -1442,7 +1459,7 @@ export function applyAction(g, act, faceDir = 1) {
     // (...or, carrying rockets, a good deal further: chooseWeapon takes the
     // rocket launcher to anything out of the gun's reach)
     let ball = null;
-    best = (p.owned.has('ROCKET') && (p.ammo.ROCKET || 0) > 0) ? 420 : 170;
+    best = ballReach(g);
     for (const e of g.entities) {
       if (e.dead || e.type !== 'SWITCH_BALL' || e.aistate !== 0) continue;
       const d = Math.hypot(e.x - p.x, e.y - 8 - (p.y - 15));

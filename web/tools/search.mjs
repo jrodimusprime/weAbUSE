@@ -421,7 +421,7 @@ if (process.argv.includes('--in-order')) {
   const { openSync } = await import('node:fs');
   const { rename, rm } = await import('node:fs/promises');
   const jobs = +arg('jobs', 6), from = +arg('from', 0), upto = +arg('upto', 21);
-  const race = `${LEVEL_DIR}race/`;
+  const race = `${LEVEL_DIR}race${from ? `-${from}` : ''}/`; // (one per run, so two runs over different levels can go side by side)
   await mkdir(race, { recursive: true });
   // the old one-after-another campaign kept its runs in search.json: move them out to level files, the one place routes now live
   for (const leg of state.legs) { try { await readFile(levelFile(leg.level)); } catch { await writeFile(levelFile(leg.level), JSON.stringify({ level: leg.level, solved: true, carried: false, pieces: leg.pieces })); } }
