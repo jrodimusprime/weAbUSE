@@ -399,6 +399,22 @@ const wallsOf = (g) => {
   return out;
 };
 const isSoft = (e) => !!e && (SOFT_AI.has(e.ai) || !!e.shootable);
+// Where the compass takes a teleporter or an exit to be. Some are kept inside
+// the rock until a SWITCH_MOVER brings them out (switch.lsp switch_mover_ai
+// puts its second link at its own position when its first comes on): level
+// 10's door out of the juggernaut room, the last teleporters and exits of
+// level 20. Until then such an object is no use where it lies, and "the
+// nearest place to stand" beside it can be another room altogether, so it is
+// read as standing where it is going to appear.
+function stowedPlaces(g) {
+  const out = new Map();
+  for (const m of g.entities) {
+    if (m.dead || m.ai !== 'switch_mover_ai' || m.aistate !== 0 || m.links.length < 2) continue;
+    const t = m.links[1];
+    if (!t.dead && NOT_WALL_AI.has(t.ai) && g.tileSolid(t.x, t.y - 10)) out.set(t, { x: m.x, y: m.y });
+  }
+  return out;
+}
 const SOFT_COST = 15;
 const REACH = 3; // how many cells of walking one cell nearer the exit (through open space) is worth
 
@@ -472,20 +488,22 @@ export function navGraph(g, nextNum) {
     }
     return best;
   };
+  const stowed = stowedPlaces(g);
+  const at = (e) => stowed.get(e) || e;
   const goals = [];
   for (const e of g.entities) {
     if (e.dead || e.ai !== 'next_level_ai') continue;
     // nextNum filters to the zones that actually advance to the next level
     // (original people.lsp: next_level_ai loads level{aistate}).
     if (nextNum !== null && e.aistate !== nextNum) continue;
-    const cell = cellOf(e);
+    const cell = cellOf(at(e));
     if (cell !== null) goals.push(cell);
   }
   if (!goals.length && nextNum !== null) {
     // fall back to any exit if no zone advances to the requested level
     for (const e of g.entities) {
       if (e.dead || e.ai !== 'next_level_ai') continue;
-      const cell = cellOf(e);
+      const cell = cellOf(at(e));
       if (cell !== null) goals.push(cell);
     }
   }
@@ -518,14 +536,14 @@ export function navGraph(g, nextNum) {
       // same thing. Level 16's door opens half way down a shaft, beside the
       // ledge the exit is on and a long way above the room the player
       // actually drops into.)
-      const dest = e.links[0];
+      const dest = e.links[0] && at(e.links[0]);
       let land = null;
       if (dest) {
         const c = Math.floor(dest.x / tw);
         for (let r = Math.max(0, Math.floor(dest.y / th)); r < H && land === null; r++) if (floorOK(c, r)) land = bodyOK(c, r) ? r * W + c : -1;
         if (land === null || land < 0) land = cellOf(dest);
       }
-      addJump(cellOf(e), land, 4);
+      addJump(cellOf(at(e)), land, 4);
     } else if (e.ai === 'platform_ai') {
       const stops = (e.links || []).slice(0, 2).map((l) => stopCell(l.x, l.y));
       if (!liftRuns(e)) continue; // waiting for its switch: somewhere to stand, not a ride
@@ -826,7 +844,9 @@ function buildFlood(g, nextNum, targets = null) {
   if (!goals.length) goals = exits;
   const heap = makeHeap();
   // distance to the exit, or (with `targets`) to the nearest of those objects
-  const seeds = (targets || goals).map(bodyCell);
+  const stowed = stowedPlaces(g);
+  const at = (e) => stowed.get(e) || e;
+  const seeds = (targets || goals).map((e) => bodyCell(at(e)));
   if (!targets) for (const f of walkGoals) if (f >= W) seeds.push(f - W); // where the walking graph stands to exit
   for (const i of seeds) if (i >= 0 && grid[i] !== 1 && flood[i] !== 0) { flood[i] = 0; heap.push(0, i); }
   // teleporters, reversed (arriving at the destination is reachable from the
@@ -839,7 +859,7 @@ function buildFlood(g, nextNum, targets = null) {
   };
   for (const e of g.entities) {
     if (e.dead) continue;
-    if ((e.ai === 'tp2_ai' || e.ai === 'tpd_ai') && e.links[0]) link(bodyCell(e), bodyCell(e.links[0]), 4);
+    if ((e.ai === 'tp2_ai' || e.ai === 'tpd_ai') && e.links[0]) link(bodyCell(at(e)), bodyCell(at(e.links[0])), 4);
     else if (e.ai === 'platform_ai' && e.links.length >= 2 && liftRuns(e)) {
       const a = bodyCell(e.links[0]), b = bodyCell(e.links[1]);
       link(a, b, 8); link(b, a, 8);
