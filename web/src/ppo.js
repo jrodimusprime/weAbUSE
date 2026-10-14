@@ -370,8 +370,32 @@ function wantedOff(g, e) {
   if (e.a.wantedOff === undefined) e.a.wantedOff = g.entities.some((o) => (o.ai === 'ff_ai' || o.ai === 'pusher_ai') && o.links[0] === e);
   return e.a.wantedOff;
 }
+// Whether a death sensor opens a way anywhere: followed forward through the
+// logic gates to a door, wall, force field, pusher, lift, object mover,
+// teleporter or exit.
+// Most of them do not. Level 11's hidden ants come one after another, each
+// death sensor letting out the next ant, and its last sensor drives nothing;
+// level 16's flyers bring on more ant roofs. Counting those creatures as
+// keys told the search to hunt down every ant before the exit would count.
+const PASSAGE_AI = new Set(['sdoor_ai', 'strap_door_ai', 'ff_ai', 'hwall_ai', 'big_wall_ai', 'pusher_ai', 'platform_ai', 'switch_mover_ai', 'bolder_ai', 'tp2_ai', 'tpd_ai', 'tele_beam_ai', 'next_level_ai']);
+function opensWay(g, e) {
+  if (e.a.opensWay !== undefined) return e.a.opensWay;
+  const users = new Map();
+  for (const o of g.entities) for (const l of o.links) (users.get(l) || users.set(l, []).get(l)).push(o);
+  const seen = new Set([e]), todo = [e];
+  let found = false;
+  while (todo.length && !found) {
+    for (const u of users.get(todo.pop()) || []) {
+      if (seen.has(u)) continue;
+      seen.add(u);
+      if (PASSAGE_AI.has(u.ai)) { found = true; break; }
+      if (GATE_AI.has(u.ai) || u.ai === 'death_sen_ai' || u.ai === 'sensor_ai') todo.push(u);
+    }
+  }
+  return (e.a.opensWay = found);
+}
 // The keys still to be dealt with: switches that are off, and creatures a
-// death sensor is waiting on.
+// death sensor that opens a way is waiting on.
 function keysToGo(g) {
   const out = [];
   for (const e of g.entities) {
@@ -381,7 +405,7 @@ function keysToGo(g) {
     // the compass would keep calling the player back to press it.)
     if (wantedOff(g, e)) { if (e.aistate !== 0) out.push(e); continue; } // done once it is off; not to be turned on again
     if (e.aistate === 0 && e.ai !== 'switch_delay_ai' && (SWITCH_AI.has(e.ai) || e.type === 'SWITCH_BALL')) out.push(e);
-    else if (e.ai === 'death_sen_ai' && e.aistate === 0) for (const l of e.links) if (!l.dead && !out.includes(l)) out.push(l);
+    else if (e.ai === 'death_sen_ai' && e.aistate === 0 && opensWay(g, e)) for (const l of e.links) if (!l.dead && !out.includes(l)) out.push(l);
   }
   return out;
 }
