@@ -804,18 +804,30 @@ function tpDoor(e, g) {
 // stopped by a trap door does not reach the room underneath.
 function forceField(e, g) {
   if (!activated(e)) { e.a.beam = false; e.a.beamRect = null; return true; }
-  const x = Math.floor(e.x);
-  const blocked = (y) => g.tileSolid(x, y) || g.solids.some((s) => s.e !== e && x >= s.x0 && x <= s.x1 && y >= s.y0 && y <= s.y1);
+
+  const xs = [Math.floor(e.x - 2), Math.floor(e.x), Math.floor(e.x + 2)];
+  const blocked = (ty) =>
+    xs.some((tx) =>
+      g.tileSolid(tx, ty) ||
+      g.solids.some((s) => s.e !== e && tx >= s.x0 && tx <= s.x1 && ty >= s.y0 && ty <= s.y1)
+    );
+
   let y = Math.floor(e.y);
-  for (let n = e.y + 200; n > 0 && !blocked(y + 1); n--) y++;
+  if (!blocked(y)) {
+    while (!blocked(y + 1)) y++;
+  }
+
   e.a.endY = y;
   e.a.beam = true;
   e.a.beamRect = { x0: e.x - 2, x1: e.x + 2, y0: e.y, y1: y };
+
   if (g.tickCount % 4 === 0) g.sound('swish', e.x, e.y);
+
   const p = g.player;
   if (!p.dead && p.y >= e.y && p.y <= y + 20 && Math.abs(p.x - e.x) < 35) {
     g.pushPlayer(p.x > e.x ? 35 - (p.x - e.x) : -(35 - (e.x - p.x)));
   }
+
   return true;
 }
 

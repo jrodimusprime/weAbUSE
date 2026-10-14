@@ -16,6 +16,7 @@
 //   node web/tools/search.mjs --per-level 20   minutes to spend on a level before giving up (default 30)
 //   node web/tools/search.mjs --levels 3       stop after passing this many more levels
 //   node web/tools/search.mjs --seed 7         a different run of the dice
+//   node web/tools/search.mjs --in-order       the whole game from level 0, weapons carried from level to level
 //   node web/tools/search.mjs --parallel       every remaining level at once, each in its own process
 //                                              (--jobs 6 at a time, --upto 21 the last level to try)
 //
@@ -395,8 +396,71 @@ if (process.argv.includes('--only')) {
   const carry = await carryInto(lv);
   console.log(carry.entry ? `level ${nn(lv)}: starting with what level ${nn(carry.from)}'s run ends with: ${carry.owned.map((w) => `${w} ${carry.ammo[w] || 0}`).join(', ')}` : `level ${nn(lv)}: starting with the machine gun alone`);
   const r = await searchLevel(lv, carry.entry, Date.now() + PER_LEVEL);
-  await writeFile(levelFile(lv), JSON.stringify({ level: lv, solved: r.solved, carried: !!carry.entry, carriedFrom: carry.from, pieces: r.pieces, ms: r.ms, iter: r.iter, cells: r.cells, dist: r.dist ?? null, at: r.at ?? null }));
+  // --out: where to put the result (--in-order races several of these and picks the winner).
+  // Without it, the level's own file, but a failed attempt never replaces a winning run.
+  let out = arg('out', null);
+  if (!out) {
+    out = levelFile(lv);
+    if (!r.solved) { try { if (JSON.parse(await readFile(out, 'utf8')).solved) out = out.replace(/\.json$/, '.failed.json'); } catch { /* nothing there */ } }
+  }
+  await writeFile(out, JSON.stringify({ level: lv, solved: r.solved, carried: !!carry.entry, carriedFrom: carry.from, pieces: r.pieces, ms: r.ms, iter: r.iter, cells: r.cells, dist: r.dist ?? null, at: r.at ?? null }));
   console.log(r.solved ? passedLine(lv, r) : failedLine(lv, r));
+  process.exit(0);
+}
+
+// ---- the whole game in order ----
+//   node web/tools/search.mjs --in-order [--from 0] [--upto 21] [--per-level 60] [--jobs 6]
+// Plays through from the first level to the last, each level starting with
+// the weapons and ammunition the one before ended with (see carryInto), so
+// the demo is one continuous run. Each level is searched by several processes
+// at once with different runs of the dice; the first to reach the exit wins
+// and the rest are stopped. A level nobody passes in time keeps its earlier
+// winning run if it has one, and the playthrough goes on to the next level.
+if (process.argv.includes('--in-order')) {
+  const { spawn } = await import('node:child_process');
+  const { openSync } = await import('node:fs');
+  const { rename, rm } = await import('node:fs/promises');
+  const jobs = +arg('jobs', 6), from = +arg('from', 0), upto = +arg('upto', 21);
+  const race = `${LEVEL_DIR}race/`;
+  await mkdir(race, { recursive: true });
+  // the old one-after-another campaign kept its runs in search.json: move them out to level files, the one place routes now live
+  for (const leg of state.legs) { try { await readFile(levelFile(leg.level)); } catch { await writeFile(levelFile(leg.level), JSON.stringify({ level: leg.level, solved: true, carried: false, pieces: leg.pieces })); } }
+  state = { frontier: 0, entry: null, legs: [], partial: null };
+  await writeFile(STATE_FILE, JSON.stringify(state));
+  const stamp = () => new Date().toISOString().slice(0, 16).replace('T', ' ');
+  console.log(`${stamp()}  playing through in order from level ${from}: ${jobs} tries at a time, up to ${PER_LEVEL / 60000} min a level`);
+  for (let lv = from; lv <= upto; lv++) {
+    const results = [];
+    let winner = null;
+    await new Promise((resolve) => {
+      let running = 0;
+      const kids = [];
+      for (let k = 0; k < jobs; k++) {
+        const out = `${race}level${nn(lv)}-${k}.json`;
+        const log = openSync(k === 0 ? `${LEVEL_DIR}level${nn(lv)}.log` : `${race}level${nn(lv)}-${k}.log`, 'w');
+        const child = spawn(process.execPath, [fileURLToPath(import.meta.url), '--only', String(lv), '--out', out, '--per-level', String(PER_LEVEL / 60000), '--seed', String(seed + lv * 100 + k * 7)], { stdio: ['ignore', log, log] });
+        kids.push(child); running++;
+        child.on('exit', async () => {
+          try { const f = JSON.parse(await readFile(out, 'utf8')); results.push(f); if (f.solved && !winner) { winner = f; for (const c of kids) if (c !== child) c.kill(); } } catch { /* stopped before it wrote anything */ }
+          if (--running === 0) resolve();
+        });
+      }
+    });
+    let had = false;
+    try { had = JSON.parse(await readFile(levelFile(lv), 'utf8')).solved; } catch { /* no earlier run */ }
+    if (winner) {
+      await writeFile(levelFile(lv), JSON.stringify(winner));
+      console.log(`${stamp()}  ${passedLine(lv, winner)}${winner.carried ? ` (carrying from level ${nn(winner.carriedFrom)})` : ''}`);
+    } else {
+      const best = results.filter((f) => f.pieces?.length).sort((a, b) => (a.dist ?? Infinity) - (b.dist ?? Infinity))[0];
+      if (!had && best) await writeFile(levelFile(lv), JSON.stringify(best));
+      console.log(`${stamp()}  ${best ? failedLine(lv, best) : `level ${nn(lv)}: no result`}${had ? ' Its earlier winning run is kept.' : ''}`);
+    }
+    await rm(race, { recursive: true, force: true }); await mkdir(race, { recursive: true });
+    const levels = await writeDemo();
+    console.log(`${stamp()}    demo: ${levels.length} levels won (${levels.join(', ')})`);
+  }
+  console.log(`${stamp()}  finished the playthrough`);
   process.exit(0);
 }
 
