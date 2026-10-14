@@ -346,14 +346,56 @@ const passedLine = (lv, r) => `level ${nn(lv)}: PASSED in ${(r.ms / 1000).toFixe
 const failedLine = (lv, r) => `level ${nn(lv)}: NOT passed in ${(r.ms / 60000).toFixed(1)} min (${r.iter} bursts, ${r.cells} cells). Nearest the exit: ${ppo.fmtDist(r.dist)} at (${r.at}).`;
 
 // ---- one level on its own (what --parallel runs, one process per level) ----
-// It starts as the game starts that level when chosen from the menu: full
-// health and the machine gun. (Only the level the campaign has reached starts
-// with what the player carried out of the level before.)
+// It starts with the weapons and ammunition the player finished the level
+// before with, as the game carries them across (view.cpp: weapons belong to
+// the player's view, not to the level). "The level before" is the nearest
+// earlier level that has a winning run; its last piece is replayed to see
+// what the player is holding at the exit. Health is full and the machine gun
+// is topped up to 100, as for any level started on its own; the power in
+// hand is not carried (people.lsp set_player_defaults).
+//
+// This is a snapshot of that run as it is now. If the earlier level is
+// searched again later and ends with a different loadout, this level's
+// recording still replays exactly (it carries its own starting state); only
+// the hand-over in the demo no longer matches to the round.
+//   --no-carry   start with the machine gun alone
+async function routeOf(lv) {
+  const leg = state.legs.find((l) => l.level === lv);
+  if (leg) return leg.pieces;
+  try { const f = JSON.parse(await readFile(levelFile(lv), 'utf8')); if (f.solved) return f.pieces; } catch { /* not searched */ }
+  return null;
+}
+async function carryInto(lv) {
+  if (process.argv.includes('--no-carry')) return { entry: null, from: null };
+  for (let k = lv - 1; k >= 0; k--) {
+    const pieces = await routeOf(k);
+    if (!pieces || !pieces.length) continue;
+    const last = pieces[pieces.length - 1];
+    await ppo.startRun(g, LEVELS[k], last.seed || null);
+    exitDest = null;
+    const acts = ppo.decodeActs(last.acts), n = Math.min(last.steps, acts.length * 4);
+    let face = 1, act = 0;
+    for (let i = 0; i < n && exitDest === null && !g.player.dead; i++) {
+      if (i % 4 === 0) { act = acts[i / 4]; const mv = (act % 3) - 1; if (mv !== 0) face = mv; }
+      ppo.applyAction(g, act, face); g.update(1 / 60);
+    }
+    const owned = [...g.player.owned], ammo = { ...g.player.ammo };
+    await ppo.startRun(g, LEVELS[lv], null); // the level as it starts: full health, no power in hand
+    const p = g.player;
+    p.owned = new Set(['MGUN', ...owned]);
+    p.ammo = { ...ammo, MGUN: Math.max(ammo.MGUN || 0, 100) };
+    p.weapon = 'MGUN';
+    exitDest = null;
+    return { entry: ppo.snapshotState(g), from: k, owned: [...p.owned], ammo: p.ammo };
+  }
+  return { entry: null, from: null };
+}
 if (process.argv.includes('--only')) {
   const lv = +arg('only');
-  const carried = lv === state.frontier && lv > 0 && state.legs.some((l) => l.level === lv - 1);
-  const r = await searchLevel(lv, carried ? state.entry : null, Date.now() + PER_LEVEL);
-  await writeFile(levelFile(lv), JSON.stringify({ level: lv, solved: r.solved, carried, pieces: r.pieces, ms: r.ms, iter: r.iter, cells: r.cells, dist: r.dist ?? null, at: r.at ?? null }));
+  const carry = await carryInto(lv);
+  console.log(carry.entry ? `level ${nn(lv)}: starting with what level ${nn(carry.from)}'s run ends with: ${carry.owned.map((w) => `${w} ${carry.ammo[w] || 0}`).join(', ')}` : `level ${nn(lv)}: starting with the machine gun alone`);
+  const r = await searchLevel(lv, carry.entry, Date.now() + PER_LEVEL);
+  await writeFile(levelFile(lv), JSON.stringify({ level: lv, solved: r.solved, carried: !!carry.entry, carriedFrom: carry.from, pieces: r.pieces, ms: r.ms, iter: r.iter, cells: r.cells, dist: r.dist ?? null, at: r.at ?? null }));
   console.log(r.solved ? passedLine(lv, r) : failedLine(lv, r));
   process.exit(0);
 }
