@@ -801,8 +801,30 @@ function navSig(g, nextNum) {
   return s;
 }
 
+// Where a switch ball can be shot from. It is set off by a shot, not by
+// walking up to it, and the place to make for is somewhere to stand that sees
+// it within the machine gun's reach (applyAction aims at it from there). Its
+// own cell can be a long way from any of those: level 15's third ball hangs
+// at the end of a slanting slit, seen only from a ledge that is reached from
+// above, while the nearest place to stand is a teleporter pad under the slit.
+function shotCells(g, e, W, H, floorOK, bodyOK) {
+  const tw = g.tw, th = g.th, bx = e.x, by = e.y - 8, R = 165;
+  const out = [];
+  const c0 = Math.max(0, Math.floor((bx - R) / tw)), c1 = Math.min(W - 1, Math.floor((bx + R) / tw));
+  const r0 = Math.max(0, Math.floor((by - R) / th)), r1 = Math.min(H - 1, Math.floor((by + R + 15) / th));
+  for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) {
+    if (!floorOK(c, r) || !bodyOK(c, r)) continue;
+    const eye = r * th - 15;
+    for (const px of [c * tw + 2, c * tw + tw / 2, (c + 1) * tw - 2]) {
+      if (Math.hypot(bx - px, by - eye) < R && g.sees(px, eye, bx, by)) { out.push(r * W + c); break; }
+    }
+  }
+  return out;
+}
+const isBall = (e) => e.type === 'SWITCH_BALL';
+
 function buildField(g, nextNum) {
-  const { N, grid, goals, expand, cellOf, locked } = navGraph(g, nextNum);
+  const { W, H, N, grid, goals, expand, cellOf, floorOK, bodyOK, locked } = navGraph(g, nextNum);
   const field = new Float64Array(N).fill(Infinity);
   field.grid = grid;
   field.locked = locked;
@@ -850,7 +872,11 @@ function buildField(g, nextNum) {
   // walking distance to the nearest of some objects (used for switches)
   field.walkTo = (objects) => {
     const d = new Float64Array(N).fill(Infinity);
-    for (const o of objects) { const c = cellOf(o); if (c !== null) d[c] = 0; }
+    for (const o of objects) {
+      const spots = isBall(o) ? shotCells(g, o, W, H, floorOK, bodyOK) : [];
+      if (spots.length) for (const c of spots) d[c] = 0;
+      else { const c = cellOf(o); if (c !== null) d[c] = 0; }
+    }
     solve(d);
     d.grid = grid;
     return d;
@@ -864,7 +890,7 @@ function buildField(g, nextNum) {
 // cost, and through teleporters. It still bends around the level's geometry,
 // which a straight line to the exit does not.
 function buildFlood(g, nextNum, targets = null) {
-  const { W, H, N, grid, goals: walkGoals, cellOf } = navGraph(g, nextNum);
+  const { W, H, N, grid, goals: walkGoals, cellOf, floorOK, bodyOK } = navGraph(g, nextNum);
   const tw = g.tw, th = g.th;
   const flood = new Float64Array(N).fill(Infinity);
   const cellAt = (x, y) => {
@@ -885,7 +911,10 @@ function buildFlood(g, nextNum, targets = null) {
   // distance to the exit, or (with `targets`) to the nearest of those objects
   const stowed = stowedPlaces(g);
   const at = (e) => stowed.get(e) || e;
-  const seeds = (targets || goals).map((e) => bodyCell(at(e)));
+  const seeds = (targets || goals).flatMap((e) => {
+    const spots = targets && isBall(e) ? shotCells(g, e, W, H, floorOK, bodyOK) : [];
+    return spots.length ? spots.map((f) => f - W) : [bodyCell(at(e))];
+  });
   if (!targets) for (const f of walkGoals) if (f >= W) seeds.push(f - W); // where the walking graph stands to exit
   for (const i of seeds) if (i >= 0 && grid[i] !== 1 && flood[i] !== 0) { flood[i] = 0; heap.push(0, i); }
   // teleporters, reversed (arriving at the destination is reachable from the
