@@ -408,6 +408,8 @@ function opensWay(g, e) {
   }
   return (e.a.opensWay = found);
 }
+// (one that wakes as the player comes near, through sensors only, is still a key: level 18's)
+const dormantGun = (e) => e.ai === 'track_ai' && e.links.length > 0 && e.links[0].aistate === 0 && switchLocked(e);
 // The keys still to be dealt with: switches that are off, and creatures a
 // death sensor that opens a way is waiting on.
 function keysToGo(g) {
@@ -420,7 +422,11 @@ function keysToGo(g) {
     if (wantedOff(g, e)) { if (e.aistate !== 0) out.push(e); continue; } // done once it is off; not to be turned on again
     if (WALL_AI.has(e.ai) && e.links.length && e.links[0].aistate === 0) { wallSensors(e, out); continue; }
     if (e.aistate === 0 && e.ai !== 'switch_delay_ai' && (SWITCH_AI.has(e.ai) || e.type === 'SWITCH_BALL')) out.push(e);
-    else if (e.ai === 'death_sen_ai' && e.aistate === 0 && opensWay(g, e)) for (const l of e.links) if (!l.dead && !out.includes(l)) out.push(l);
+    // (A creature that cannot be hurt yet is not a key yet: a turret is not
+    // targetable until it is switched on, guns.lsp track_ai, and level 15's
+    // come on only after switch 11 and the sensor that blow the last walls.
+    // Until then the way to it is those, which are keys of their own.)
+    else if (e.ai === 'death_sen_ai' && e.aistate === 0 && opensWay(g, e)) for (const l of e.links) if (!l.dead && !dormantGun(l) && !out.includes(l)) out.push(l);
   }
   return out;
 }
