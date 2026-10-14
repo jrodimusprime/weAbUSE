@@ -828,6 +828,27 @@ function shotCells(g, e, W, H, floorOK, bodyOK) {
   return out;
 }
 const isBall = (e) => e.type === 'SWITCH_BALL';
+// Where a sensor is tripped from: anywhere to stand with the player's feet in
+// its box (switch.lsp sensor_ai: x within xvel, y within yvel), allowing a
+// jump. The sensor itself can sit somewhere no one can stand: level 15's, in
+// the turret room, is on top of a turret, and is tripped by jumping off the
+// floor beside it.
+const JUMP_REACH = 45;
+function sensorCells(g, e, W, H, floorOK, bodyOK) {
+  const tw = g.tw, th = g.th, out = [];
+  if (!(e.xvel > 0) || !(e.yvel > 0)) return out;
+  const c0 = Math.max(0, Math.floor((e.x - e.xvel) / tw)), c1 = Math.min(W - 1, Math.floor((e.x + e.xvel) / tw));
+  const r0 = Math.max(0, Math.floor((e.y - e.yvel) / th)), r1 = Math.min(H - 1, Math.floor((e.y + e.yvel + JUMP_REACH) / th));
+  for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) {
+    if (!floorOK(c, r) || !bodyOK(c, r)) continue;
+    const feet = r * th;
+    if (feet <= e.y - e.yvel || feet >= e.y + e.yvel + JUMP_REACH) continue;
+    if ([c * tw + 2, c * tw + tw / 2, (c + 1) * tw - 2].some((x) => Math.abs(x - e.x) < e.xvel)) out.push(r * W + c);
+  }
+  return out;
+}
+const spotsFor = (g, e, W, H, floorOK, bodyOK) => (isBall(e) ? shotCells(g, e, W, H, floorOK, bodyOK)
+  : e.ai === 'sensor_ai' ? sensorCells(g, e, W, H, floorOK, bodyOK) : []);
 
 function buildField(g, nextNum) {
   const { W, H, N, grid, goals, expand, cellOf, floorOK, bodyOK, locked } = navGraph(g, nextNum);
@@ -879,7 +900,7 @@ function buildField(g, nextNum) {
   field.walkTo = (objects) => {
     const d = new Float64Array(N).fill(Infinity);
     for (const o of objects) {
-      const spots = isBall(o) ? shotCells(g, o, W, H, floorOK, bodyOK) : [];
+      const spots = spotsFor(g, o, W, H, floorOK, bodyOK);
       if (spots.length) for (const c of spots) d[c] = 0;
       else { const c = cellOf(o); if (c !== null) d[c] = 0; }
     }
@@ -918,7 +939,7 @@ function buildFlood(g, nextNum, targets = null) {
   const stowed = stowedPlaces(g);
   const at = (e) => stowed.get(e) || e;
   const seeds = (targets || goals).flatMap((e) => {
-    const spots = targets && isBall(e) ? shotCells(g, e, W, H, floorOK, bodyOK) : [];
+    const spots = targets ? spotsFor(g, e, W, H, floorOK, bodyOK) : [];
     return spots.length ? spots.map((f) => f - W) : [bodyCell(at(e))];
   });
   if (!targets) for (const f of walkGoals) if (f >= W) seeds.push(f - W); // where the walking graph stands to exit
