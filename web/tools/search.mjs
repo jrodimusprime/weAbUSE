@@ -138,8 +138,15 @@ const atChosenExit = () => {
 const wallsLeft = () => { let n = 0; for (const e of g.entities) if (!e.dead && (e.ai === 'hwall_ai' || e.ai === 'big_wall_ai' || e.ai === 'block_ai')) n++; return n; };
 function cellKey() {
   const p = g.player;
-  let keys = '';
-  for (const e of ppo.keysToGo(g)) keys += `${e.id}.`;
+  // Switches (and switch balls) are named one by one: which are on matters.
+  // Everything else still to do (creatures to kill, sensors to trip) is
+  // counted, not listed. Level 16 has groups of creatures that can be killed
+  // in any order (the eight flyers by trap door 515); listed, every subset
+  // killed was a state of its own, over a thousand of them, and the search's
+  // time went in spreading itself across them.
+  let keys = '', others = 0;
+  for (const e of ppo.keysToGo(g)) { if (e.type === 'SWITCH_BALL' || /^switch/.test(e.ai || '')) keys += `${e.id}.`; else others++; }
+  keys += `+${others}`;
   // A delay gate that is counting is progress too (a door that opens after
   // the player has stood by it for some seconds): how far each has got, in
   // steps of 20 ticks, so that waiting is not thrown away as "nothing new".
@@ -328,7 +335,9 @@ async function searchLevel(lv, entry, deadline) {
     for (const e of g.entities) if (e.ai === 'next_level_ai') mark.set(`${Math.floor(e.x / g.tw)},${Math.floor((e.y - 1) / g.th)}`, e.aistate === next ? 'E' : 'x');
     mark.set(`${Math.floor(bestCell.x / g.tw)},${Math.floor((bestCell.y - 1) / g.th)}`, '@');
     for (let r = 0; r < H; r++) { let line = ''; for (let c = 0; c < W; c++) line += mark.get(`${c},${r}`) || (g.tileSolid(c * g.tw + 15, r * g.th + 7) ? '#' : ' '); rows.push(`${String(r * g.th).padStart(5)} ${line.replace(/\s+$/, '')}`); }
-    const text = `Level ${lv}: not passed. ${list.length} cells in ${states.size} states of the level; the furthest-on state has ${here.length} cells.\n`
+    // what the states differ by: how many distinct values each part of a state takes
+    const parts = ['keys', 'walls left', 'power', 'weapons'].map((name, i) => `${name} ${new Set([...states.keys()].map((k) => k.split('|')[i])).size}`).join(', ');
+    const text = `Level ${lv}: not passed. ${list.length} cells in ${states.size} states of the level (distinct ${parts}); the furthest-on state has ${here.length} cells.\n`
       + `Nearest the exit: ${ppo.fmtDist(bestDist)} at (${bestCell.x},${bestCell.y}), hp ${bestCell.hp}.\n`
       + `Still to do in that state (K on the map): ${todo.map((e) => `${e.def.name}@${Math.round(e.x)},${Math.round(e.y)}`).join('  ') || 'nothing'}\n`
       + `Player in that state: weapons ${[...g.player.owned].join(',')}, power ${g.player.power || 'none'}\n`

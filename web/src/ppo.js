@@ -420,6 +420,10 @@ function watchedKey(l, out, depth) {
   if (l.dead || dormantGun(l) || out.includes(l)) return;
   const w = l.links[0];
   if (depth < 4 && w && w.ai === 'death_sen_ai' && w.aistate === 0 && !SWITCH_AI.has(l.ai) && l.ai !== 'death_sen_ai') {
+    // (Woken by taking a pickup, a heart that can only be taken when hurt:
+    // not something to set out to do. Level 16's funnel flyers, whose trap
+    // doors stand open unless the player is down by the sensor beneath.)
+    if (w.links.length && w.links.every((m) => m.ai === 'hp_up' || /_icon_ai$|power/.test(m.ai || ''))) return;
     for (const m of w.links) watchedKey(m, out, depth + 1);
     if (w.links.some((m) => out.includes(m))) return;
   }
