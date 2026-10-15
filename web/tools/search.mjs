@@ -217,13 +217,29 @@ async function searchLevel(lv, entry, deadline) {
       // 5's arrow strips, which push along the floor and along the ceiling
       // and leave a gap between) needs the height held for a second or two.
       if (cruise && cruise.left-- > 0 && g.player.power === 'FLY') {
-        const pl = g.player;
-        act = ACT(cruise.dir, pl.y > cruise.y || pl.vy > 30 ? 1 : 0, 0, enemyNear() && rnd() < 0.5 ? 1 : 0);
+        const pl = g.player, t = cruise.to;
+        if (t) {
+          // flying to a switch: hold its height, steer over it, press the action key on alternate decisions
+          const dx = t.x - pl.x, mv = Math.abs(dx) < 6 ? 0 : Math.sign(dx);
+          const there = Math.abs(dx) < 16 && Math.abs(pl.y - t.y) < 26;
+          act = ACT(mv, pl.y > t.y + 4 || pl.vy > 30 ? 1 : 0, there && cruise.left % 2 === 0 ? 1 : 0, enemyNear() && rnd() < 0.5 ? 1 : 0);
+          if (t.aistate !== 0) cruise = null;
+        } else act = ACT(cruise.dir, pl.y > cruise.y || pl.vy > 30 ? 1 : 0, 0, enemyNear() && rnd() < 0.5 ? 1 : 0);
       } else {
         cruise = null;
         if (hold-- <= 0) {
           climb = 0; act = randomAct(dirBias); hold = climb || Math.floor(rnd() * rnd() * 14);
-          if (g.player.power === 'FLY' && rnd() < 0.3) cruise = { left: 8 + Math.floor(rnd() * 40), dir: dirBias || (rnd() < 0.5 ? 1 : -1), y: g.player.y + 6 - rnd() * 45 };
+          if (g.player.power === 'FLY' && rnd() < 0.3) {
+            // A switch still to press that hangs out of reach overhead is
+            // flown to (level 16's four, up the wall of a dead-end room, each
+            // switching off one of the force fields across the way on); other
+            // times the jetpack holds a chosen height while heading one way.
+            const pl = g.player;
+            const up = rnd() < 0.5 ? ppo.keysToGo(g).filter((e) => (e.ai === 'switcher_ai' || e.ai === 'switch_once_ai') && e.aistate === 0
+              && Math.abs(e.x - pl.x) < 300 && e.y < pl.y - 35 && pl.y - e.y < 300) : [];
+            if (up.length) cruise = { left: 30 + Math.floor(rnd() * 30), to: up[Math.floor(rnd() * up.length)] };
+            else cruise = { left: 8 + Math.floor(rnd() * 40), dir: dirBias || (rnd() < 0.5 ? 1 : -1), y: g.player.y + 6 - rnd() * 45 };
+          }
         }
       }
       acts.push(act);
@@ -390,6 +406,53 @@ async function carryInto(lv) {
     return { entry: ppo.snapshotState(g), from: k, owned: [...p.owned], ammo: p.ammo };
   }
   return { entry: null, from: null };
+}
+// --repair (with --only): a won route that a change to the game has broken
+// part way is mended rather than thrown away. Its pieces are replayed, each
+// from its own saved start, as the regression does; the first piece that no
+// longer ends where the next begins is kept, played as the game now plays it,
+// and the search carries on from where it ends.
+async function repairStart(lv) {
+  let f = null;
+  try { f = JSON.parse(await readFile(levelFile(lv), 'utf8')); } catch { /* none */ }
+  if (!f?.pieces?.length) return null;
+  const pieces = f.pieces;
+  for (let k = 0; k < pieces.length; k++) {
+    await ppo.startRun(g, LEVELS[lv], pieces[k].seed || null);
+    exitDest = null;
+    const acts = ppo.decodeActs(pieces[k].acts), n = Math.min(pieces[k].steps, acts.length * 4);
+    let face = 1, act = 0;
+    for (let i = 0; i < n && exitDest === null && !g.player.dead; i++) {
+      if (i % 4 === 0) { act = acts[i / 4]; const mv = (act % 3) - 1; if (mv !== 0) face = mv; }
+      ppo.applyAction(g, act, face); g.update(1 / 60);
+    }
+    const nx = pieces[k + 1];
+    if (g.player.dead) return { prefix: pieces.slice(0, k), entry: pieces[k].seed, kept: k, of: pieces.length, carried: f.carried, carriedFrom: f.carriedFrom };
+    if (!nx) return null; // it still wins as it is
+    if (Math.round(g.player.x) !== nx.seed.px || Math.round(g.player.y) !== nx.seed.py) {
+      return { prefix: pieces.slice(0, k + 1), entry: ppo.snapshotState(g), kept: k + 1, of: pieces.length, carried: f.carried, carriedFrom: f.carriedFrom };
+    }
+  }
+  return null;
+}
+// --write-demo: rebuild the demo from the level files as they stand, and stop
+if (process.argv.includes('--write-demo')) {
+  const levels = await writeDemo();
+  console.log(`demo: ${levels.length} levels won (${levels.join(', ')})`);
+  process.exit(0);
+}
+if (process.argv.includes('--only') && process.argv.includes('--repair')) {
+  const lv = +arg('only');
+  const rep = await repairStart(lv);
+  if (!rep) { console.log(`level ${nn(lv)}: nothing to repair`); process.exit(0); }
+  console.log(`level ${nn(lv)}: keeping ${rep.kept} of ${rep.of} pieces of the old route; searching on from where piece ${rep.kept} now ends`);
+  const r = await searchLevel(lv, rep.entry, Date.now() + PER_LEVEL);
+  const out = arg('out', null) || (r.solved ? levelFile(lv) : levelFile(lv).replace(/\.json$/, '.failed.json'));
+  const pieces = rep.prefix.concat(r.pieces);
+  await writeFile(out, JSON.stringify({ level: lv, solved: r.solved, carried: rep.carried, carriedFrom: rep.carriedFrom, pieces, ms: r.ms, iter: r.iter, cells: r.cells, dist: r.dist ?? null, at: r.at ?? null, repaired: true }));
+  console.log(r.solved ? passedLine(lv, { ...r, pieces }) : failedLine(lv, r));
+  if (r.solved && !arg('out', null)) { const levels = await writeDemo(); console.log(`  demo: ${levels.length} levels won (${levels.join(', ')})`); }
+  process.exit(0);
 }
 if (process.argv.includes('--only')) {
   const lv = +arg('only');
