@@ -44,6 +44,7 @@ const rnd = () => { seed |= 0; seed = (seed + 0x6D2B79F5) | 0; let t = Math.imul
 
 // ---- the search's own settings ----
 const BURST = 90;      // decisions tried from a cell (a decision is 4 game steps, 1/15 s): 6 seconds of play
+const MAX_CELLS = +arg('max-cells', 30000); // cells a search keeps at most (see "Memory:" in searchLevel)
 const LOOK = 3;        // decisions between looks at where the player has got to
 const GRID_X = 36, GRID_Y = 30; // size of a cell, in pixels
 
@@ -159,7 +160,7 @@ async function searchLevel(lv, entry, deadline) {
   };
   noteState(root);
   cells.set(root.key, root); list.push(root);
-  let iter = 0, simSteps = 0, bestDist = root.dist, bestCell = root, lastPrint = Date.now(), deaths = 0;
+  let iter = 0, simSteps = 0, bestDist = root.dist, bestCell = root, lastPrint = Date.now(), deaths = 0, evicted = 0;
   const t0 = Date.now();
 
   const seedOf = (cell) => (cell.snap ? unpack(cell.snap, level0) : cell.full);
@@ -272,9 +273,34 @@ async function searchLevel(lv, entry, deadline) {
         if (rec.dist < bestDist) { bestDist = rec.dist; bestCell = rec; }
       }
     }
+    // Memory: every cell keeps a saved state, and a long search on a big
+    // level (16) gathered 300,000-440,000 of them a process, which with
+    // several processes side by side filled the machine's memory. Past
+    // MAX_CELLS the least promising quarter is let go: furthest behind the
+    // best of their state, most often tried already, oldest. (A cell let go
+    // that is the parent of one kept stays in memory through it, as its
+    // route back to the start needs it; the rest are freed.)
+    if (list.length > MAX_CELLS) {
+      const keep = new Set([root, bestCell]);
+      const bestOf = new Map();
+      for (const c of list) { const b = bestOf.get(c.state); if (!b || c.dist < b.dist) bestOf.set(c.state, c); }
+      for (const c of bestOf.values()) keep.add(c);
+      const worth = (c) => {
+        const gap = c.dist - (states.get(c.state)?.best ?? c.dist);
+        const lead = !isFinite(c.dist) ? 0.5 : gap <= 8 ? 10 : gap <= 60 ? 4 : gap <= 400 ? 1.5 : 1;
+        return (lead * (1 + 3 * Math.exp(-(iter - c.born) / 300))) / Math.sqrt(1 + c.chosen);
+      };
+      const ranked = list.filter((c) => !keep.has(c)).sort((a, b) => worth(a) - worth(b));
+      const drop = new Set(ranked.slice(0, Math.floor(list.length / 4)));
+      for (const c of drop) if (cells.get(c.key) === c) cells.delete(c.key);
+      list.splice(0, list.length, ...list.filter((c) => !drop.has(c)));
+      const live = new Set(list.map((c) => c.state));
+      for (const k of [...states.keys()]) if (!live.has(k)) states.delete(k);
+      evicted += drop.size;
+    }
     if (Date.now() - lastPrint > 15000) {
       lastPrint = Date.now();
-      console.log(`  level ${String(lv).padStart(2, '0')}  ${((Date.now() - t0) / 60000).toFixed(1)} min  ${iter} bursts  ${list.length} cells  ${Math.round(simSteps / ((Date.now() - t0) / 1000))} steps/s  nearest the exit: ${ppo.fmtDist(bestDist)} at (${bestCell.x ?? '-'},${bestCell.y ?? '-'})  deaths ${deaths}`);
+      console.log(`  level ${String(lv).padStart(2, '0')}  ${((Date.now() - t0) / 60000).toFixed(1)} min  ${iter} bursts  ${list.length} cells${evicted ? ` (${evicted} let go)` : ''}  ${(process.memoryUsage().rss / 1e9).toFixed(2)} GB  ${Math.round(simSteps / ((Date.now() - t0) / 1000))} steps/s  nearest the exit: ${ppo.fmtDist(bestDist)} at (${bestCell.x ?? '-'},${bestCell.y ?? '-'})  deaths ${deaths}`);
     }
   }
   // out of time: a map of everywhere it stood in the furthest-on state of the
