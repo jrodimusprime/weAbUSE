@@ -410,6 +410,21 @@ function opensWay(g, e) {
 }
 // (one that wakes as the player comes near, through sensors only, is still a key: level 18's)
 const dormantGun = (e) => e.ai === 'track_ai' && e.links.length > 0 && e.links[0].aistate === 0 && switchLocked(e);
+// A creature a death sensor is waiting on, as a key. One that is itself
+// waiting on another death sensor (it comes out only when something else has
+// been killed or taken) is reached through that: level 16's eight roof ants
+// over trap door 515 drop one by one as the flyers that wake by the door are
+// shot, and its three flyers by the funnel come out only when the heart above
+// them is taken. Until then the thing to make for is the flyer, or the heart.
+function watchedKey(l, out, depth) {
+  if (l.dead || dormantGun(l) || out.includes(l)) return;
+  const w = l.links[0];
+  if (depth < 4 && w && w.ai === 'death_sen_ai' && w.aistate === 0 && !SWITCH_AI.has(l.ai) && l.ai !== 'death_sen_ai') {
+    for (const m of w.links) watchedKey(m, out, depth + 1);
+    if (w.links.some((m) => out.includes(m))) return;
+  }
+  out.push(l);
+}
 // The keys still to be dealt with: switches that are off, and creatures a
 // death sensor that opens a way is waiting on.
 function keysToGo(g) {
@@ -426,7 +441,7 @@ function keysToGo(g) {
     // targetable until it is switched on, guns.lsp track_ai, and level 15's
     // come on only after switch 11 and the sensor that blow the last walls.
     // Until then the way to it is those, which are keys of their own.)
-    else if (e.ai === 'death_sen_ai' && e.aistate === 0 && opensWay(g, e)) for (const l of e.links) if (!l.dead && !dormantGun(l) && !out.includes(l)) out.push(l);
+    else if (e.ai === 'death_sen_ai' && e.aistate === 0 && opensWay(g, e)) for (const l of e.links) watchedKey(l, out, 0);
   }
   return out;
 }
