@@ -81,15 +81,23 @@ has stood past an obstacle it can start from there for ever.
 
 **What it plays.** Bursts are random, but shaped like a player's input: mostly
 on the move, the action key now and then, firing when something is in range.
-Aiming is automatic. A few things random play cannot do are offered as moves of
-their own: climbing a ladder steadily, standing still on a moving lift, and
-flying level with the jetpack.
+Aiming is automatic, at enemies, then switch balls (from as far as the weapons
+with ammunition carry), then breakable walls. A few things random play cannot
+do are offered as moves of their own: climbing a ladder steadily, standing
+still on a moving lift, flying level with the jetpack, and flying up to a
+switch that hangs out of reach and pressing it.
 
 **How it chooses where to explore from.** It favours situations tried least
 often, recent ones, and ones nearer the exit by a "compass": the walking
 distance to the exit, or, while doors are still locked, the number of switches
 and watched creatures left to deal with. Half its picks are spread evenly
 across the states of the level, so that a dead end cannot absorb the whole run.
+The compass knows the level's wiring: a wall wired to a switch is locked, a
+switch ball is made for at the places it can be shot from and a sensor at the
+places that trip it, a teleporter kept inside the rock is read where its mover
+will put it, and a creature counts only if its death opens a way and it can be
+reached (a turret a switch has yet to wake, or a flyer that comes out only
+when a heart is taken, is reached through what wakes it).
 
 **What comes out.** Following a winning situation back through the archive
 gives a chain of pieces, each one "start from this saved state and play these
@@ -101,10 +109,24 @@ then shows "AI gave up".
 **Running it.**
 
 ```sh
-node web/tools/search.mjs --parallel   # search every level that has no route, several at once
-node web/tools/search.mjs --recheck    # after changing the game: drop the routes that no longer replay
-node web/tools/regress.mjs             # check that every level won before is still won
+node web/tools/search.mjs --in-order --jobs 2          # play the game from level 0, weapons carried level to level
+node web/tools/search.mjs --in-order --from 16 --upto 16 # just some levels, in order
+node web/tools/search.mjs --only 11 --repair            # mend a route a game change has broken part way
+node web/tools/search.mjs --write-demo                  # rebuild the demo from train-out/levels/
+node web/tools/search.mjs --recheck                     # after changing the game: drop the routes that no longer replay
+node web/tools/regress.mjs                              # check that every level won before is still won
 ```
+
+The demo is one playthrough in order: each level starts with the weapons and
+ammunition the level before ended with (level 16 needs them). `--in-order`
+races `--jobs` searches per level and keeps the first winner. Each search
+keeps at most `--max-cells` saved states (30,000 by default, about 1 GB); keep
+the total number of searches running at once low on a machine with little
+memory. `--repair` keeps the pieces of an old route that still replay and
+searches on from the first one that no longer meets the next.
+
+All 22 levels are won this way (level 16 last, in about two hours of
+searching).
 
 **What it is good and bad at.** Most levels fall in seconds to a few minutes.
 It struggles where a level needs a long exact sequence with nowhere to stand in
