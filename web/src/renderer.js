@@ -24,6 +24,7 @@ precision highp float;
 uniform sampler2D u_tex;
 uniform sampler2D u_pal;
 uniform float u_bright;
+uniform float u_red;
 uniform sampler2D u_light;
 uniform float u_lit;
 uniform vec2 u_lightSize;
@@ -38,7 +39,9 @@ void main() {
     float lv = texture2D(u_light, (v_px / 4.0 + 0.5) / u_lightSize).r * 255.0;
     c = max(c - (63.0 - lv), 0.0);
   }
-  gl_FragColor = vec4(c / 255.0 * u_bright, 1.0);
+  vec3 col = c / 255.0 * u_bright;
+  col.r = min(1.0, col.r + u_red / 255.0); // cop.cpp bottom_draw: the palette's red raised after a hit
+  gl_FragColor = vec4(col, 1.0);
 }`;
 
 const ATLAS = 4096;
@@ -70,6 +73,8 @@ export class Renderer {
     gl.uniform1i(gl.getUniformLocation(this.prog, 'u_light'), 2);
     gl.uniform2f(gl.getUniformLocation(this.prog, 'u_lightSize'), LIGHT_W, LIGHT_H);
     this.litLoc = gl.getUniformLocation(this.prog, 'u_lit');
+    this.redLoc = gl.getUniformLocation(this.prog, 'u_red');
+    gl.uniform1f(this.redLoc, 0);
     gl.uniform1f(this.litLoc, 0);
 
     gl.activeTexture(gl.TEXTURE0);
@@ -169,7 +174,12 @@ export class Renderer {
     gl.clearColor(0, 0, 0, 1);
     gl.clear(gl.COLOR_BUFFER_BIT);
     this.count = 0;
+    gl.uniform1f(this.redLoc, 0);
   }
+
+  // Red added to every colour of the palette (0-255) for the rest of the
+  // frame: the flash when the player is hurt (cop.cpp bottom_draw).
+  setRed(r) { this.flush(); this.gl.uniform1f(this.redLoc, r); }
 
   // Palette brightness multiplier, used for the player's muzzle-flash tint.
   // Flushes first so it only affects subsequent quads.

@@ -124,8 +124,11 @@ let exitDest = null;
 g.nextLevel = (n) => { exitDest = n; g.transitioning = true; };
 g.onEndGame = () => { exitDest = LEVELS.length; }; // the last level's "exit" is the ending
 
-// --exit <id>: only that exit counts (and the compass steers for it alone)
-const EXIT_ID = arg('exit', null) === null ? null : +arg('exit');
+// --exit <id>: only that exit counts (and the compass steers for it alone).
+// Some levels have it fixed: level 0 has three exits to level 1, and the
+// tutorial ends at the far one, at the bottom right.
+const EXIT_FOR = { 0: 74 };
+const EXIT_ID = arg('exit', null) !== null ? +arg('exit') : arg('only', null) !== null ? (EXIT_FOR[+arg('only')] ?? null) : null;
 if (EXIT_ID !== null) ppo.exitChoice.ids = new Set([EXIT_ID]);
 const atChosenExit = () => {
   if (EXIT_ID === null) return true;

@@ -6,6 +6,7 @@ const FILES = {
   enemyshot: 'plasma02', antdie: 'adie02', antscare: 'alien01', antland: 'aland01', antslash: 'aslash01',
   health: 'health01', ammo: 'ammo01', spring: 'spring03', swish: 'swish01', switch: 'switch01', tick: 'timerfst',
   hwall: 'crmble01', crumble: 'crmble01', teleport: 'telept01', die: 'pldeth02',
+  pain1: 'plpain01', pain2: 'plpain02', pain3: 'plpain04', pain4: 'plpain10', // sfx.lsp PLAYER_PAIN
 };
 
 export class Audio {

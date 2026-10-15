@@ -250,6 +250,7 @@ export class Game {
     this.tpLatch = false;
     p.weapon = 'MGUN'; p.ammo = { MGUN: 100 }; p.owned = new Set(['MGUN']); p.power = null;
     p.dir = 1; p.anim = 0; p.jumpQueued = false; p.justFired = false; p.ground = false; p.state = 'stopped';
+    p.flinch = 0; this.redRamp = 0;
     this.keys.clear(); this.mouseDown = false; this.rightDown = false; this.mouse = null;
     this.respawn();
     this.cam.x = p.x - VIEW_W / 2;
@@ -671,8 +672,19 @@ export class Game {
     if (p.dead) return;
     const d = this.difficulty;
     amount = d === 'easy' ? Math.trunc(amount / 2) : d === 'medium' ? Math.trunc((amount * 3) / 4) : d === 'extreme' ? amount * 3 : amount;
+    // people.lsp bottom_damage: every hit makes the player flinch (up or
+    // down at random), during which objects.cpp mover ignores the movement
+    // keys ("flinching? don't move"), and flashes the screen red: r_ramp
+    // grows by 7 a point of damage, to at most 120, and cop.cpp bottom_draw
+    // takes 7 off it a tick. A hit of more than 8 that does not kill is
+    // also a cry of pain. Without these a hit was easy to miss altogether:
+    // lava's 3 a time on easy, on level 0 with hearts all along it, looked
+    // like no damage at all.
+    p.flinchState = this.rand(2) === 0 ? 'flinch_up' : 'flinch_down';
+    p.flinch = 4 * TICK; // the flinch sequences are 4 frames, one a tick
+    this.redRamp = Math.min(120, (this.redRamp || 0) + Math.trunc(amount * 7));
     p.hp -= amount;
-    if (p.hp > 0) return;
+    if (p.hp > 0) { if (amount > 8) this.sound(`pain${this.rand(4) + 1}`, p.x, p.y); return; }
     if (this.god) { this.countGodDeath(); p.hp = p.maxhp; return; }
     p.hp = 0; p.dead = true; p.deadTime = 2; p.vx = 0; this.sound('die');
   }
@@ -872,6 +884,7 @@ export class Game {
     const p = this.player;
     if (!this.pressed('action')) this.tpLatch = false;
     this.tickCount = (this.tickCount || 0) + 1;
+    if (this.redRamp) this.redRamp = this.redRamp > 7 ? this.redRamp - 7 : 0; // cop.cpp bottom_draw
     if (this.msgTime > 0) this.msgTime--;
     if (this.helpTime > 0 && --this.helpTime === 0) { this.helpText = ''; this.onHelp?.(''); this.helpVoice = null; }
     // cop.cpp top_ai: the weapon's fire_delay1 counts down once per tick.
@@ -1000,17 +1013,20 @@ export class Game {
       return;
     }
 
-    const left = k.has('ArrowLeft') || k.has('KeyA');
-    const right = k.has('ArrowRight') || k.has('KeyD');
-    const up = k.has('ArrowUp') || k.has('KeyW');
-    const down = k.has('ArrowDown') || k.has('KeyS');
+    // (while flinching from a hit the movement keys do nothing: see hurtPlayer)
+    const still = p.flinch > 0;
+    if (still) p.flinch -= dt;
+    const left = !still && (k.has('ArrowLeft') || k.has('KeyA'));
+    const right = !still && (k.has('ArrowRight') || k.has('KeyD'));
+    const up = !still && (k.has('ArrowUp') || k.has('KeyW'));
+    const down = !still && (k.has('ArrowDown') || k.has('KeyS'));
     const ladder = this.inLadder(p);
     // cop.cpp climb_handler: once off the top of a ladder, Up is an ordinary
     // jump again (the ladder only takes hold more than 8 px below its top).
     // That hop is how one ladder leads to the next where they are stacked
     // through a floor: holding Up climbs, steps off, hops and catches the
     // ladder above.
-    const jump = k.has('Space') || k.has('KeyZ') || (up && !ladder);
+    const jump = (!still && (k.has('Space') || k.has('KeyZ'))) || (up && !ladder);
 
     if (ladder && (up || down) && !p.climbing) p.climbing = true;
     if (!ladder) p.climbing = false;
@@ -1071,7 +1087,7 @@ export class Game {
       // state (cop.cpp player_move calls next_picture each tick), so the idle
       // and run cycles both run at the one fixed rate.
       p.anim += dt / TICK;
-      p.state = !p.ground ? (p.vy < 0 ? 'run_jump' : 'run_jump_fall') : Math.abs(p.vx) > 10 ? 'running' : 'stopped';
+      p.state = still ? p.flinchState : !p.ground ? (p.vy < 0 ? 'run_jump' : 'run_jump_fall') : Math.abs(p.vx) > 10 ? 'running' : 'stopped';
     }
 
     if (this.mouse) {
@@ -1216,6 +1232,7 @@ export class Game {
     const cx = Math.floor(this.cam.x), cy = Math.floor(this.cam.y);
     const alpha = Math.min(1, this.tickAcc / TICK);
     r.begin();
+    if (this.redRamp) r.setRed(this.redRamp);
     if (this.lightsOn) r.setLightMap(this.lightMap.update(lv.lights, cx, cy, this.ambient));
     r.setLit(this.lightsOn);
 
