@@ -124,6 +124,14 @@ let exitDest = null;
 g.nextLevel = (n) => { exitDest = n; g.transitioning = true; };
 g.onEndGame = () => { exitDest = LEVELS.length; }; // the last level's "exit" is the ending
 
+// --exit <id>: only that exit counts (and the compass steers for it alone)
+const EXIT_ID = arg('exit', null) === null ? null : +arg('exit');
+if (EXIT_ID !== null) ppo.exitChoice.ids = new Set([EXIT_ID]);
+const atChosenExit = () => {
+  if (EXIT_ID === null) return true;
+  const e = g.entities.find((o) => o.id === EXIT_ID), p = g.player;
+  return !!e && Math.abs(p.x - e.x) < 40 && Math.abs(p.y - e.y) < 60;
+};
 const wallsLeft = () => { let n = 0; for (const e of g.entities) if (!e.dead && (e.ai === 'hwall_ai' || e.ai === 'big_wall_ai' || e.ai === 'block_ai')) n++; return n; };
 function cellKey() {
   const p = g.player;
@@ -249,7 +257,7 @@ async function searchLevel(lv, entry, deadline) {
       let s = 0;
       for (; s < 4 && exitDest === null && !g.player.dead; s++) { ppo.applyAction(g, act, face); g.update(1 / 60); simSteps++; }
       if (exitDest !== null) {
-        if (exitDest === next) return { solved: true, pieces: chain(null, ppo.encodeActs(acts), (acts.length - 1) * 4 + s, cell), iter, simSteps, cells: list.length, ms: Date.now() - t0 };
+        if (exitDest === next && atChosenExit()) return { solved: true, pieces: chain(null, ppo.encodeActs(acts), (acts.length - 1) * 4 + s, cell), iter, simSteps, cells: list.length, ms: Date.now() - t0 };
         break; // an exit to somewhere else: not a way on
       }
       if (g.player.dead) { deaths++; break; }

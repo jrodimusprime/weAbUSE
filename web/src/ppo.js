@@ -459,6 +459,11 @@ const wallsOf = (g) => {
   return out;
 };
 const isSoft = (e) => !!e && (SOFT_AI.has(e.ai) || !!e.shootable);
+// Which exits the compass steers for: all of them, or (search.mjs --exit)
+// only the one a level is meant to be left by. Level 0 has three that lead to
+// level 1, and the one the tutorial ends at is the far one.
+export const exitChoice = { ids: null };
+const exitAllowed = (e) => !exitChoice.ids || exitChoice.ids.has(e.id);
 // Where the compass takes a teleporter or an exit to be. Some are kept inside
 // the rock until a SWITCH_MOVER brings them out (switch.lsp switch_mover_ai
 // puts its second link at its own position when its first comes on): level
@@ -552,7 +557,7 @@ export function navGraph(g, nextNum) {
   const at = (e) => stowed.get(e) || e;
   const goals = [];
   for (const e of g.entities) {
-    if (e.dead || e.ai !== 'next_level_ai') continue;
+    if (e.dead || e.ai !== 'next_level_ai' || !exitAllowed(e)) continue;
     // nextNum filters to the zones that actually advance to the next level
     // (original people.lsp: next_level_ai loads level{aistate}).
     if (nextNum !== null && e.aistate !== nextNum) continue;
@@ -562,7 +567,7 @@ export function navGraph(g, nextNum) {
   if (!goals.length && nextNum !== null) {
     // fall back to any exit if no zone advances to the requested level
     for (const e of g.entities) {
-      if (e.dead || e.ai !== 'next_level_ai') continue;
+      if (e.dead || e.ai !== 'next_level_ai' || !exitAllowed(e)) continue;
       const cell = cellOf(at(e));
       if (cell !== null) goals.push(cell);
     }
@@ -808,7 +813,7 @@ export function pathDist(g, nextNum = null) {
 // a wall is destroyed, a lift moves).
 function navSig(g, nextNum) {
   const tw = g.tw, th = g.th;
-  let s = `${g.level.name}|${nextNum}`;
+  let s = `${g.level.name}|${nextNum}|${exitChoice.ids ? [...exitChoice.ids].join(',') : ''}`;
   // Only the cells a solid covers matter (see navGraph), so animation frames
   // and sub-cell movement don't invalidate the field.
   for (const e of liftsOf(g)) if (e.links.length >= 3) s += liftRuns(e) ? ';L1' : ';L0'; // lifts waiting for a switch
@@ -962,7 +967,7 @@ function buildFlood(g, nextNum, targets = null) {
     const f = cellOf(e);
     return f !== null && f >= W ? f - W : -1;
   };
-  const exits = g.entities.filter((e) => !e.dead && e.ai === 'next_level_ai');
+  const exits = g.entities.filter((e) => !e.dead && e.ai === 'next_level_ai' && exitAllowed(e));
   let goals = exits.filter((e) => nextNum === null || e.aistate === nextNum);
   if (!goals.length) goals = exits;
   const heap = makeHeap();
