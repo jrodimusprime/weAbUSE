@@ -1135,6 +1135,24 @@ export function exitDist(g, nextNum = null) {
     if (sw.dist !== Infinity) return LOCKED + sw.off * 1000 + Math.min(sw.dist, 999);
     useFields(g, nextNum); // (switchDist may have moved the cache to its own exit number)
   }
+  // Nothing left to switch and still no way to walk there: an exit up where
+  // only the jetpack reaches. Level 16's is at the top of a shaft, above the
+  // door its teleporter lets the player out at. Until one is in hand, the
+  // jetpack counts as one more thing to fetch (it is lost with a life).
+  if (g.player.power !== 'FLY') {
+    const packs = g.entities.filter((e) => !e.dead && e.ai === 'fly_power_ai');
+    if (packs.length) {
+      const k = `fly${packs.map((e) => e.id).join(',')}`;
+      let f = fieldCache.sw.get(k);
+      if (!f) { f = { walk: fieldCache.field.walkTo(packs), flood: buildFlood(g, nextNum, packs) }; fieldCache.sw.set(k, f); }
+      let d = readWalk(g, f.walk);
+      if (d === Infinity) d = readFlood(g, f.flood);
+      // (somewhere no jetpack can be got from reads as far as can be: the
+      // straight line to the exit through the rock, all there was before,
+      // held level 16's search in a pocket of blown walls for hours)
+      return LOCKED + 1000 + Math.min(d, 999);
+    }
+  }
   const reach = readWalk(g, fieldCache.field.reach);
   if (reach !== Infinity) return OPEN + reach;
   const open = floodDist(g, nextNum);
