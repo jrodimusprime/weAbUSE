@@ -235,7 +235,10 @@ page, hidden.)
 Bugs:
 
 - **Elevators can clip into the player and lock them in place.**
-- **The digger machines do no damage.**
+
+Not a bug: the cleaner robots (the "digger machines", `ROB1`) do no damage in
+the original either. `jugger.lsp` `rob1_ai` only pushes the player away
+(`push_char 30 55`).
 
 Closer to the original (found while checking level 15; each changes how most
 levels play, so every level's recorded route has to be searched again, or

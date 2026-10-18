@@ -552,10 +552,17 @@ export class Game {
   pushRiders(e, dx, dy) {
     const p = this.player;
     const r = this.deckRect(e);
-    if (!r || p.dead || (!dx && !dy) || !this.overDeck(r)) return;
+    // (riding needs the player's centre over the deck: platform_push asks
+    // whether a 2-pixel move down by the player's feet is stopped by it)
+    if (!r || p.dead || (!dx && !dy) || p.x < r.x0 || p.x > r.x1) return;
     if (dy < 0 && p.y <= r.y0 && p.y - dy >= r.y0) p.y = r.y0;
     if (p.y >= r.y0 - 2 && p.y <= r.y0 + 4) {
-      p.x += dx; p.y += dy; p.vy = 0; p.ground = true;
+      // platform_push moves the rider with try_move: a wall stops them
+      // rather than letting the lift carry them through it
+      const others = new Set([...this.around, e]);
+      if (dx && !this.boxHits(p.x + dx, p.y, HALF_W, BODY_H, others)) p.x += dx;
+      if (dy && !(dy < 0 ? this.pointHits(p.x, p.y + dy - BODY_H) && !this.pointHits(p.x, p.y - BODY_H) : false)) p.y += dy;
+      p.vy = 0; p.ground = true;
     }
   }
 
@@ -1188,6 +1195,29 @@ export class Game {
     }
   }
 
+  // Whether the player's feet (or head) would be in something at height y:
+  // the original moves a character as two points, its feet and its head, at
+  // its centre x (objects.cpp try_move: foreground_intersect and
+  // boundary_setback from (x, y) and from (x, y - h + 1)). So the player
+  // stands only on what is under their centre, and hits their head only on
+  // what is over it. Tested three pixels wide, not one, as verticalHits does:
+  // some tiles' outlines stop a pixel short of the edge, leaving one-pixel
+  // slits between them. (Walking into a wall still uses the whole body, in
+  // moveX: that keeps the picture out of walls.) With the whole width of the
+  // body under the feet, the player could stand with their centre six pixels
+  // out over thin air, caught on the corner of a ledge or the edge of a door.
+  pointHits(x, y) {
+    const cx = Math.floor(x), yy = Math.floor(y);
+    if (this.tileSolid(cx - 1, yy) || this.tileSolid(cx, yy) || this.tileSolid(cx + 1, yy)) return true;
+    for (const s of this.solids) {
+      if (this.around.has(s.e)) continue;
+      if (cx + 1 >= s.x0 && cx - 1 <= s.x1 && yy >= s.y0 && yy <= s.y1) return true;
+    }
+    return false;
+  }
+  feetHit(p, y) { return this.pointHits(p.x, y - 1); }
+  headHits(p, y) { return this.pointHits(p.x, y - BODY_H); }
+
   moveY(p, dy) {
     const n = Math.ceil(Math.abs(dy));
     const s = Math.sign(dy);
@@ -1196,11 +1226,11 @@ export class Game {
     // This is the same body test that stops a fall, so the player counts as
     // standing wherever they are held up — on a ramp the support is under the
     // uphill edge of the body, not under its centre.
-    if (n === 0) { p.ground = this.boxHits(p.x, p.y + 1, HALF_W, BODY_H, this.around); return; }
+    if (n === 0) { p.ground = this.feetHit(p, p.y + 1); return; }
     p.ground = false;
     for (let i = 0; i < n; i++) {
       const ny = p.y + s * Math.min(1, Math.abs(dy) - i);
-      if (!this.boxHits(p.x, ny, HALF_W, BODY_H, this.around)) { p.y = ny; continue; }
+      if (!(s > 0 ? this.feetHit(p, ny) : this.headHits(p, ny))) { p.y = ny; continue; }
       if (s > 0) {
         p.ground = true;
         // The original zeroes the fixed-point state when the fall is blocked.
