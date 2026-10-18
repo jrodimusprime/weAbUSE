@@ -130,6 +130,9 @@ g.onEndGame = () => { exitDest = LEVELS.length; }; // the last level's "exit" is
 const EXIT_FOR = { 0: 74 };
 const EXIT_ID = arg('exit', null) !== null ? +arg('exit') : arg('only', null) !== null ? (EXIT_FOR[+arg('only')] ?? null) : null;
 if (EXIT_ID !== null) ppo.exitChoice.ids = new Set([EXIT_ID]);
+// levels whose exit only the jetpack reaches: level 16's, at the top of a shaft above its teleporter
+const FLY_FOR = new Set([16]);
+if (arg('only', null) !== null && FLY_FOR.has(+arg('only'))) ppo.exitChoice.needsFlight = true;
 const atChosenExit = () => {
   if (EXIT_ID === null) return true;
   const e = g.entities.find((o) => o.id === EXIT_ID), p = g.player;

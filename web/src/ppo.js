@@ -466,7 +466,12 @@ const isSoft = (e) => !!e && (SOFT_AI.has(e.ai) || !!e.shootable);
 // Which exits the compass steers for: all of them, or (search.mjs --exit)
 // only the one a level is meant to be left by. Level 0 has three that lead to
 // level 1, and the one the tutorial ends at is the far one.
-export const exitChoice = { ids: null };
+// needsFlight (search.mjs, for a level whose exit only the jetpack
+// reaches): until one is in hand, fetching it is one more thing to do. Not
+// for every level with a jetpack and no walking route the compass can see:
+// level 8's lifts and drops leave the compass without one, and there the rule
+// made every place read alike.
+export const exitChoice = { ids: null, needsFlight: false };
 const exitAllowed = (e) => !exitChoice.ids || exitChoice.ids.has(e.id);
 // Where the compass takes a teleporter or an exit to be. Some are kept inside
 // the rock until a SWITCH_MOVER brings them out (switch.lsp switch_mover_ai
@@ -1139,7 +1144,7 @@ export function exitDist(g, nextNum = null) {
   // only the jetpack reaches. Level 16's is at the top of a shaft, above the
   // door its teleporter lets the player out at. Until one is in hand, the
   // jetpack counts as one more thing to fetch (it is lost with a life).
-  if (g.player.power !== 'FLY') {
+  if (exitChoice.needsFlight && g.player.power !== 'FLY') {
     const packs = g.entities.filter((e) => !e.dead && e.ai === 'fly_power_ai');
     if (packs.length) {
       const k = `fly${packs.map((e) => e.id).join(',')}`;
