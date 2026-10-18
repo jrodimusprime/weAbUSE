@@ -1,7 +1,7 @@
 import { Game } from './game.js';
 import { WEAPON_ORDER } from './weapons.js';
 import { readPalette, T } from './spec.js';
-import { LEVELS, toggleFullGameDemo, toggleLevelDemo, loadDemoFile, stopDemo, demoRunning, toggleDemoPause } from './demo.js';
+import { LEVELS, toggleFullGameDemo, toggleLevelDemo, loadDemoFile, stopDemo, demoRunning, toggleDemoPause, setDemoSpeed, getDemoSpeed } from './demo.js';
 import { PpoTrainer, loadCampaign, saveCampaign, saveStations, forgetTraining, CAMPAIGN_KEY, STATIONS_KEY } from './ppo.js';
 
 const select = document.getElementById('level');
@@ -78,6 +78,11 @@ const refreshPauseDemo = () => {
 };
 setInterval(refreshPauseDemo, 300);
 pauseDemoBtn.addEventListener('click', () => { toggleDemoPause(); pauseDemoBtn.blur(); refreshPauseDemo(); });
+// Demo speed: x2 (the usual) or x5, shown selected; it takes effect at once if the demo is running.
+const speedBtns = { 2: document.getElementById('speed2'), 5: document.getElementById('speed5') };
+const refreshSpeed = () => { for (const [s, b] of Object.entries(speedBtns)) b.classList.toggle('on', +s === getDemoSpeed()); };
+for (const [s, b] of Object.entries(speedBtns)) b.addEventListener('click', () => { setDemoSpeed(+s); b.blur(); refreshSpeed(); });
+refreshSpeed();
 fullGameBtn.addEventListener('click', async () => {
   stopTraining();
   fullGameBtn.blur();

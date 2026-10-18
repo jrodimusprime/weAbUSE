@@ -25,6 +25,14 @@ function startWait(a) {
   a.wait = setTimeout(() => { a.wait = null; a.left = 0; const go = a.resume; a.resume = null; if (active === a && go) go(); }, a.left);
 }
 
+// How fast the demo plays (the x2 and x5 buttons); it can change while it runs.
+let demoSpeed = 2;
+export const getDemoSpeed = () => demoSpeed;
+export function setDemoSpeed(s) {
+  demoSpeed = s;
+  if (active) active.game.speed = s;
+}
+
 export const demoRunning = () => !!active;
 export const demoPaused = () => !!active?.game.paused;
 // Pause or resume the demo where it is.
@@ -98,10 +106,10 @@ function playPieces(game, btn, select, pieces) {
   const mine = active;
   select.disabled = true;
   game.demo = true; // the keyboard is ignored; Esc stops
-  game.speed = 2;
+  game.speed = demoSpeed;
   game.demoTimeoutTicks = 0;
   game.onDemoStop = () => stopDemo();
-  game.onLevel = (name) => { mine.oldOnLevel?.(name); if (active === mine) game.toast(`Demo (2x): ${name}`); };
+  game.onLevel = (name) => { mine.oldOnLevel?.(name); if (active === mine) game.toast(`Demo (${demoSpeed}x): ${name}`); };
   let k = -1, exited = false;
   const finish = (text) => {
     if (active !== mine) return;
