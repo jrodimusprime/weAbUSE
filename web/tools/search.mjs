@@ -133,6 +133,7 @@ if (EXIT_ID !== null) ppo.exitChoice.ids = new Set([EXIT_ID]);
 // levels whose exit only the jetpack reaches: level 16's, at the top of a shaft above its teleporter
 const FLY_FOR = new Set([16]);
 if (arg('only', null) !== null && FLY_FOR.has(+arg('only'))) ppo.exitChoice.needsFlight = true;
+const atChosenExitFor = (e) => EXIT_ID === null || e.id === EXIT_ID;
 const atChosenExit = () => {
   if (EXIT_ID === null) return true;
   const e = g.entities.find((o) => o.id === EXIT_ID), p = g.player;
@@ -240,7 +241,14 @@ async function searchLevel(lv, entry, deadline) {
       // and leave a gap between) needs the height held for a second or two.
       if (cruise && cruise.left-- > 0 && g.player.power === 'FLY') {
         const pl = g.player, t = cruise.to;
-        if (t) {
+        if (t && t.ai === 'next_level_ai') {
+          // flying to the exit: climb to just above it, cross over at that
+          // height, then cut the jetpack, land on it and press the action key
+          const dx = t.x - pl.x, mv = Math.abs(dx) < 4 ? 0 : Math.sign(dx);
+          const over = Math.abs(dx) < 10, above = pl.y < t.y - 12;
+          const thrust = !over && (!above || pl.vy > 30) ? 1 : 0;
+          act = ACT(mv, thrust, over && pl.ground && cruise.left % 2 === 0 ? 1 : 0, enemyNear() && rnd() < 0.3 ? 1 : 0);
+        } else if (t) {
           // flying to a switch: hold its height, steer over it, press the action key on alternate decisions
           const dx = t.x - pl.x, mv = Math.abs(dx) < 6 ? 0 : Math.sign(dx);
           const there = Math.abs(dx) < 16 && Math.abs(pl.y - t.y) < 26;
@@ -259,7 +267,12 @@ async function searchLevel(lv, entry, deadline) {
             const pl = g.player;
             const up = rnd() < 0.5 ? ppo.keysToGo(g).filter((e) => (e.ai === 'switcher_ai' || e.ai === 'switch_once_ai') && e.aistate === 0
               && Math.abs(e.x - pl.x) < 300 && e.y < pl.y - 35 && pl.y - e.y < 300) : [];
-            if (up.length) cruise = { left: 30 + Math.floor(rnd() * 30), to: up[Math.floor(rnd() * up.length)] };
+            // ...and the exit, when it is in reach of a flight (level 16's is on
+            // a ledge above the shaft its teleporter lets the player out into)
+            const exitNear = g.entities.find((e) => !e.dead && e.ai === 'next_level_ai' && e.aistate === next && atChosenExitFor(e)
+              && Math.abs(e.x - pl.x) < 300 && Math.abs(e.y - pl.y) < 300);
+            if (exitNear && rnd() < 0.5) cruise = { left: 40 + Math.floor(rnd() * 40), to: exitNear };
+            else if (up.length) cruise = { left: 30 + Math.floor(rnd() * 30), to: up[Math.floor(rnd() * up.length)] };
             else cruise = { left: 8 + Math.floor(rnd() * 40), dir: dirBias || (rnd() < 0.5 ? 1 : -1), y: g.player.y + 6 - rnd() * 45 };
           }
         }
@@ -511,6 +524,7 @@ if (process.argv.includes('--only') && process.argv.includes('--repair')) {
 if (process.argv.includes('--only')) {
   const lv = +arg('only');
   const carry = await carryInto(lv);
+  if (arg('from-state', null)) { carry.entry = JSON.parse(await readFile(arg('from-state'), 'utf8')).seed; carry.from = 'a saved state'; carry.owned = []; carry.ammo = {}; }
   console.log(carry.entry ? `level ${nn(lv)}: starting with what level ${nn(carry.from)}'s run ends with: ${carry.owned.map((w) => `${w} ${carry.ammo[w] || 0}`).join(', ')}` : `level ${nn(lv)}: starting with the machine gun alone`);
   const r = await searchLevel(lv, carry.entry, Date.now() + PER_LEVEL);
   // --out: where to put the result (--in-order races several of these and picks the winner).
