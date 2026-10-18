@@ -178,7 +178,7 @@ async function searchLevel(lv, entry, deadline) {
   };
   noteState(root);
   cells.set(root.key, root); list.push(root);
-  let iter = 0, simSteps = 0, bestDist = root.dist, bestCell = root, lastPrint = Date.now(), deaths = 0, evicted = 0;
+  let iter = 0, simSteps = 0, bestDist = root.dist, bestCell = root, lastPrint = Date.now(), deaths = 0, evicted = 0, lastBestDump = 0;
   const t0 = Date.now();
 
   const seedOf = (cell) => (cell.snap ? unpack(cell.snap, level0) : cell.full);
@@ -288,7 +288,12 @@ async function searchLevel(lv, entry, deadline) {
         cells.set(key, rec);
         noteState(rec);
         if (old) list[list.indexOf(old)] = rec; else list.push(rec);
-        if (rec.dist < bestDist) { bestDist = rec.dist; bestCell = rec; }
+        if (rec.dist < bestDist) {
+          bestDist = rec.dist; bestCell = rec;
+          // the furthest-on situation so far, as a saved state, for looking at by hand
+          // (load it with ppo.startRun(g, LEVELS[lv], seed))
+          if (Date.now() - lastBestDump > 30000) { lastBestDump = Date.now(); writeFile(`${OUT}best-level${String(lv).padStart(2, '0')}-${process.pid}.json`, JSON.stringify({ x: rec.x, y: rec.y, dist: ppo.fmtDist(rec.dist), seed: seedOf(rec) })).catch(() => {}); }
+        }
       }
     }
     // Memory: every cell keeps a saved state, and a long search on a big
