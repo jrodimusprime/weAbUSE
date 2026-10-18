@@ -221,7 +221,10 @@ Most levels fall in seconds to a few minutes; level 16 took about two hours.
 Where a level would not fall, asking why usually found a bug in the port, not
 in the search: a timed switch that reset too soon, a spring that was too weak,
 teleporter pads you fell through, a juggernaut that never walked, and turrets
-whose whole picture, not their outline, blocked a passage on level 15.
+whose whole picture, not their outline, blocked a passage on level 15. Lava
+that seemed to do no damage turned out to be the player's whole hurt reaction
+missing (the flinch that stops you for a moment, the red flash, the cry of
+pain): lava's 3 a time on easy went unnoticed among level 0's hearts.
 
 (The file name `ppo-demo.json`, and `web/src/ppo.js`, which now holds the
 compass, are left over from the PPO attempt. Its controls are still in the
@@ -233,7 +236,6 @@ Bugs:
 
 - **Elevators can clip into the player and lock them in place.**
 - **The digger machines do no damage.**
-- **Lava does no damage.**
 
 Closer to the original (found while checking level 15; each changes how most
 levels play, so every level's recorded route has to be searched again, or
