@@ -25,6 +25,21 @@ export const WEAPONS = {
 };
 export const WEAPON_ORDER = ['MGUN', 'PGUN', 'GRENADE', 'ROCKET', 'FIREBOMB', 'DFRIS', 'LSABER'];
 
+// abuse.lsp bad_guy_list (the types the original's seekers look for), as far as this game has them
+const BAD_GUYS = new Set(['ANT_ROOF', 'TRACK_GUN', 'SPRAY_GUN', 'JUGGER', 'ROB1', 'WHO', 'FLYER', 'GREEN_FLYER', 'BOSS_ANT']);
+const badGuyNear = (g, x, y, rx, ry, skip = null) => {
+  let best = null, bd = Infinity;
+  for (const e of g.entities) {
+    if (e.dead || e === skip || !BAD_GUYS.has(e.type) || !e.shootable) continue;
+    const dx = Math.abs(e.x - x), dy = Math.abs(e.y - y);
+    if (dx >= rx || dy >= ry) continue;
+    if (g.apart?.(skip, e)) continue; // (a 3D host: only what is at the shot's depth)
+    const d = dx * dx + dy * dy;
+    if (d < bd) { bd = d; best = e; }
+  }
+  return best;
+};
+
 // 1px Bresenham line in a palette colour (the original draws bullets with draw_line).
 function dline(r, x0, y0, x1, y1, idx) {
   let x = Math.round(x0), y = Math.round(y0);
@@ -96,17 +111,60 @@ export function firePlayer(g) {
       vx: c * speed, vy: s * speed, life: 6, dmg: 5, mine: true,
     });
     g.sound('mgun');
-  } else if (w.kind === 'plasma') {
-    g.projs.push({ kind: 'plasma', x: ox, y: oy, px: ox, py: oy, vx: c * 34, vy: s * 34, life: 20, dmg: w.big ? 18 : 9, mine: true, big: !!w.big });
+  } else if (!g.originalWeapons) {
+    // (this game's own weapons, which its recorded runs were played with: see Game.originalWeapons)
+    if (w.kind === 'plasma') {
+      g.projs.push({ kind: 'plasma', x: ox, y: oy, px: ox, py: oy, vx: c * 34, vy: s * 34, life: 20, dmg: w.big ? 18 : 9, mine: true, big: !!w.big });
+      g.sound('plasma');
+    } else if (w.kind === 'grenade') {
+      g.projs.push({
+        kind: 'grenade', x: ox, y: oy, px: ox, py: oy, vx: c * 13 + vx0, vy: s * 13 - 3, gravity: 2, life: 40, dmg: w.fire ? 45 : 40,
+        radius: w.fire ? 60 : 50, mine: true, def: w.fire ? 'FIREBOMB' : 'GRENADE', bounces: 0,
+      });
+      g.sound('throw');
+    } else if (w.kind === 'rocket') {
+      g.projs.push({ kind: 'rocket', x: ox, y: oy, px: ox, py: oy, vx: c * 18, vy: s * 18, ang, life: 60, dmg: 35, radius: 55, mine: true, def: 'ROCKET', smoke: 0 });
+      g.sound('rocket');
+    }
+  } else if (p.weapon === 'PGUN') {
+    // guns.lsp fire_object 4, PLASMAGUN_BULLET: no bolt but a line, at once: set_course angle 200 and one
+    // bmove, stopping at the first thing in the way: a wall pops EXPLODE5, something hurtable EXPLODE3 and
+    // 10 damage. What is left lives 5 ticks to be drawn (pgun_draw: a scatter line fading pink).
+    // (Traced on the next projectile update, when a 3D host has given it its course across the hall.)
+    g.projs.push({ kind: 'beam', style: 'plasma', x: ox, y: oy, px: ox, py: oy, ox, oy, angDeg: p.aimAngle, reach: 200, dmg: 10, life: 5, pending: true, mine: true });
     g.sound('plasma');
+  } else if (p.weapon === 'LSABER') {
+    // fire_object 7, LSABER_BULLET: the same at reach 45 for 30 damage, fired every tick (fire_delay1 1) at
+    // the aim plus (tick & 7) - 8 degrees (cop.cpp lsaber_ufun): a flickering blade. Drawn for one tick.
+    const a = p.aimAngle + ((g.tickCount || 0) & 7) - 8;
+    g.projs.push({ kind: 'beam', style: 'saber', x: ox, y: oy, px: ox, py: oy, ox, oy, angDeg: a, reach: 45, dmg: 30, life: 1, pending: true, mine: true });
+    g.sound('plasma02');
+  } else if (p.weapon === 'DFRIS') {
+    // fire_object 6, DFRIS_BULLET (dfris_ai): a disc that flies at 12 a tick (25 on the first), turning up to
+    // 35 degrees a tick towards the player's pointer, trailing smoke; it blows up (do_white_explo 40 45) on
+    // anything in its way or a bad guy within 7.
+    g.projs.push({ kind: 'disc', x: ox, y: oy, px: ox, py: oy, angDeg: p.aimAngle, speed: 25, vx: c * 25, vy: s * 25, life: 300, dmg: 45, radius: 40, mine: true, def: 'DFRIS_BULLET', frame: 0 });
+    g.sound('rocket');
+  } else if (p.weapon === 'FIREBOMB') {
+    // fire_object 5, FIREBOMB (firebomb_ai): set_course angle 20, plus the thrower's fall. Not a grenade: an
+    // unseen fire that runs on (it falls, and slides to a stop once down) for up to 20 ticks, every tick
+    // bursting into flame (EXPLODE1) and burning all round it (hurt_radius 60 40, push 10), until a wall.
+    g.projs.push({ kind: 'firebomb', x: ox, y: oy, px: ox, py: oy, vx: c * 20, vy: s * 20 + p.vy / 15, t: 0, dmg: 40, radius: 60, mine: true });
+    g.sound('firebmb1');
   } else if (w.kind === 'grenade') {
+    // GRENADE: do_explo 40 36 (weapons.lsp grenade_ai), the same as the ones enemies throw
     g.projs.push({
-      kind: 'grenade', x: ox, y: oy, px: ox, py: oy, vx: c * 13 + vx0, vy: s * 13 - 3, gravity: 2, life: 40, dmg: w.fire ? 45 : 40,
-      radius: w.fire ? 60 : 50, mine: true, def: w.fire ? 'FIREBOMB' : 'GRENADE', bounces: 0,
+      kind: 'grenade', x: ox, y: oy, px: ox, py: oy, vx: c * 13 + vx0, vy: s * 13 - 3, gravity: 2, life: 40, dmg: 36,
+      radius: 40, mine: true, def: 'GRENADE', bounces: 0,
     });
     g.sound('throw');
   } else if (w.kind === 'rocket') {
-    g.projs.push({ kind: 'rocket', x: ox, y: oy, px: ox, py: oy, vx: c * 18, vy: s * 18, ang, life: 60, dmg: 35, radius: 55, mine: true, def: 'ROCKET', smoke: 0 });
+    // cop.cpp player_rocket_ufun: locks on to the nearest bad guy within 160 x 130 as it fires; fire_object
+    // 3: speed 5, gaining 2 a tick to 14 (the player's), turning up to 23 degrees a tick towards its target
+    // (rocket_ai), straight on without one; do_explo 40 50 on a hit or within 10 of the target.
+    const b = { kind: 'rocket', x: ox, y: oy, px: ox, py: oy, vx: c * 5, vy: s * 5, life: 90, dmg: 50, radius: 40, mine: true, def: 'ROCKET', smoke: 0, homing: true, speed: 5, maxSpeed: 14, angDeg: ((p.aimAngle % 360) + 360) % 360, hp: 4 };
+    b.target = badGuyNear(g, p.x, p.y, 160, 130);
+    g.projs.push(b);
     g.sound('rocket');
   }
 }
@@ -122,7 +180,11 @@ export function firePlayer(g) {
 export function enemyFire(g, type, x, y, angle) {
   const a = angle * Math.PI / 180, c = Math.cos(a), s = -Math.sin(a);
   const base = { x, y, px: x, py: y, mine: false };
-  if (type === 2 || type === 5) {
+  if (type === 5 && g.originalWeapons) {
+    // FIREBOMB (firebomb_ai): see firePlayer
+    g.projs.push({ ...base, kind: 'firebomb', vx: c * 20, vy: s * 20, t: 0, dmg: 40, radius: 60 });
+    g.sound('firebmb1', x, y);
+  } else if (type === 2 || type === 5) {
     // set_course angle 20, then the grenade's own gravity
     g.projs.push({ ...base, kind: 'grenade', vx: c * 20, vy: s * 20, gravity: 2, life: 40, dmg: 36, radius: 40, def: type === 5 ? 'FIREBOMB' : 'GRENADE', bounces: 0 });
     g.sound('throw', x, y);
@@ -131,6 +193,10 @@ export function enemyFire(g, type, x, y, angle) {
     // player's), turns up to 23 degrees a tick towards its target
     g.projs.push({ ...base, kind: 'rocket', vx: c * 5, vy: s * 5, life: 90, dmg: 50, radius: 40, def: 'ROCKET', smoke: 0, homing: true, speed: 5, angDeg: ((angle % 360) + 360) % 360, hp: 4 });
     g.sound('rocket', x, y);
+  } else if (type === 4 && g.originalWeapons) {
+    // PLASMAGUN_BULLET: a line, at once (see firePlayer)
+    g.projs.push({ ...base, kind: 'beam', style: 'plasma', ox: x, oy: y, angDeg: angle, reach: 200, dmg: 10, life: 5, pending: true });
+    g.sound('plasma', x, y);
   } else if (type === 4) {
     g.projs.push({ ...base, kind: 'plasma', vx: c * 34, vy: s * 34, life: 20, dmg: 10 });
     g.sound('plasma', x, y);
@@ -183,7 +249,10 @@ function detonate(g, b) {
   if (b.dead) return;
   b.dead = true;
   g.blast = b; // what is blowing up, for a 3D host's depth check (see Game.explode)
-  g.explode(b.x, b.y, b.radius, b.dmg, b.mine);
+  // hurt_radius excludes the shot's creator (explo.lsp do_explo: get_object 0): the player's own blasts
+  // do not hurt the player. The frisbee's is do_white_explo (EXPLODE8).
+  const spare = !!b.mine && !!g.originalWeapons;
+  g.explode(b.x, b.y, b.radius, b.dmg, b.mine, false, null, spare, b.kind === 'disc' ? 'EXPLODE8' : 'EXPLODE1');
   g.blast = null;
 }
 
@@ -209,9 +278,70 @@ export function hurtRocketsInBlast(g, x, y, radius, dmg) {
   }
 }
 
+// A plasma or saber line (fire_object 4 and 7): one bmove from the gun along the angle, up to its reach,
+// stopping at the first thing in the way.
+function traceBeam(g, b) {
+  b.pending = false;
+  const a = b.angDeg * Math.PI / 180, c = Math.cos(a), s = -Math.sin(a);
+  for (let d = 1; d <= b.reach; d++) {
+    b.x = b.ox + c * d; b.y = b.oy + s * d;
+    if (g.shotStopped?.(b)) break; // (a 3D host: a frame or side wall of the hall in the way; not set in this game)
+    const hit = hitAt(g, b);
+    if (!hit) continue;
+    if (hit.tile) { if (b.style === 'plasma') g.effect('EXPLODE5', b.x - g.rand(5), b.y - g.rand(5)); }
+    else {
+      if (b.style === 'plasma') g.effect('EXPLODE3', b.x - g.rand(5), b.y - g.rand(5));
+      if (hit.player) g.hurtPlayer(b.dmg);
+      else if (hit.rocket) damageRocket(g, hit.rocket, b.dmg);
+      else g.damage(hit.entity, b.dmg, c * 20, s * 10);
+    }
+    break;
+  }
+  b.px = b.ox; b.py = b.oy;
+}
+
+// weapons.lsp firebomb_ai, one tick: flame and burn where it is, then move on (it falls; once down it slows
+// by its stop_accel, 4, ability.cpp) while it is young or still moving, for 20 ticks, until blocked.
+function fireBombTick(g, b) {
+  g.effect('EXPLODE1', b.x - g.rand(5), b.y + g.rand(20));
+  g.blast = b;
+  g.hurtRadius(b.x, b.y, b.radius, b.dmg, b.mine, false, null, !!b.mine);
+  g.blast = null;
+  if (!((b.t < 3 || b.vx !== 0) && b.t < 20)) { b.dead = true; return; }
+  b.t++;
+  if (!b.down) b.vy += 2;
+  const steps = Math.max(1, Math.ceil(Math.hypot(b.vx, b.vy) / 3));
+  for (let i = 0; i < steps; i++) {
+    const nx = b.x + b.vx / steps;
+    if (g.tileSolid(Math.floor(nx), Math.floor(b.y))) { b.dead = true; return; } // blocked: it stops burning
+    b.x = nx;
+    const ny = b.y + b.vy / steps;
+    if (b.vy > 0 && g.tileSolid(Math.floor(b.x), Math.floor(ny))) { b.down = true; b.vy = 0; }
+    else if (b.vy < 0 && g.tileSolid(Math.floor(b.x), Math.floor(ny))) b.vy = 0;
+    else b.y = ny;
+  }
+  if (b.down) {
+    if (!g.tileSolid(Math.floor(b.x), Math.floor(b.y) + 1)) b.down = false; // off an edge: falls again
+    else b.vx = b.vx > 0 ? Math.max(0, b.vx - 4) : Math.min(0, b.vx + 4);
+  }
+}
+
+// weapons.lsp dfris_ai: towards the player's pointer, by up to 35 degrees a tick (get_fris_angle)
+function discTurn(g, b) {
+  if (!g.mouse || !b.mine) return;
+  const px = g.mouse.x + g.cam.x, py = g.mouse.y + g.cam.y;
+  let want = Math.atan2(b.y - py - 4, px - b.x) * 180 / Math.PI;
+  if (want < 0) want += 360;
+  let diff = want - b.angDeg;
+  if (diff > 180) diff -= 360; else if (diff < -180) diff += 360;
+  b.angDeg = (b.angDeg + Math.max(-35, Math.min(35, diff)) + 360) % 360;
+}
+
 export function updateProjectiles(g) {
   for (const b of g.projs) {
     if (b.dead) continue; // (shot down or caught in a blast earlier this tick)
+    if (b.kind === 'beam') { if (b.pending) traceBeam(g, b); else if (--b.life <= 0) b.dead = true; continue; }
+    if (b.kind === 'firebomb') { b.px = b.x; b.py = b.y; fireBombTick(g, b); continue; }
     b.px = b.x; b.py = b.y;
     const bullet = b.kind === 'bullet';
     if (bullet) {
@@ -226,20 +356,37 @@ export function updateProjectiles(g) {
       continue;
     }
     if (b.gravity) b.vy += b.gravity;
+    if (b.kind === 'disc') {
+      // dfris_ai: smoke every other tick, then on at 12 towards the pointer
+      if ((g.tickCount || 0) % 2 === 0) g.effect('SMALL_LIGHT_CLOUD', b.x, b.y);
+      if (b.frame++ > 0) { discTurn(g, b); b.speed = 12; }
+      const a = b.angDeg * Math.PI / 180;
+      b.vx = Math.cos(a) * b.speed; b.vy = -Math.sin(a) * b.speed;
+      if (b.mine) {
+        const near = badGuyNear(g, b.x, b.y, 7, 7, b);
+        if (near) { detonate(g, b); continue; }
+      }
+    }
     if (b.kind === 'rocket') {
       if (b.homing) {
-        // weapons.lsp rocket_ai: steer towards the target (the player, 15 px
-        // above the feet) by up to 23 degrees a tick, not at all within 5
-        const p = g.player;
-        let want = Math.atan2(b.y - (p.y - 15), p.x - b.x) * 180 / Math.PI;
-        if (want < 0) want += 360;
-        const clock = want < b.angDeg ? b.angDeg - want : b.angDeg + (360 - want);
-        const closest = clock > 180 ? 360 - clock : clock;
-        const add = closest > 23 ? 23 : closest < 5 ? 0 : closest;
-        b.angDeg = clock > 180 ? (b.angDeg + add) % 360 : (b.angDeg - add + 360) % 360;
-        if (b.speed < 10) b.speed += 2;
+        // weapons.lsp rocket_ai: steer towards the target (an enemy's: the
+        // player; the player's: the bad guy it locked on to), 15 px above the
+        // feet, by up to 23 degrees a tick, not at all within 5; with no
+        // target (or one gone) straight on
+        const t = b.mine ? (b.target && !b.target.dead ? b.target : null) : g.player;
+        if (t) {
+          let want = Math.atan2(b.y - (t.y - 15), t.x - b.x) * 180 / Math.PI;
+          if (want < 0) want += 360;
+          const clock = want < b.angDeg ? b.angDeg - want : b.angDeg + (360 - want);
+          const closest = clock > 180 ? 360 - clock : clock;
+          const add = closest > 23 ? 23 : closest < 5 ? 0 : closest;
+          b.angDeg = clock > 180 ? (b.angDeg + add) % 360 : (b.angDeg - add + 360) % 360;
+        }
+        if (b.speed < (b.maxSpeed ?? 10)) b.speed += 2;
         const a = b.angDeg * Math.PI / 180;
         b.vx = Math.cos(a) * b.speed; b.vy = -Math.sin(a) * b.speed;
+        // and it blows within 10 of its target
+        if (t && b.mine && Math.abs(t.x - b.x) < 10 && Math.abs(t.y - b.y - 15) < 10) { detonate(g, b); continue; }
       } else if (!b.straight) { b.vx *= 1.04; b.vy *= 1.04; }
       if (++b.smoke % 2 === 0) g.effect('SMALL_LIGHT_CLOUD', b.x, b.y);
     }
@@ -259,7 +406,7 @@ export function updateProjectiles(g) {
         if (++b.bounces > 5) detonate(g, b);
         break;
       }
-      if (b.kind === 'grenade' || b.kind === 'rocket') { detonate(g, b); break; }
+      if (b.kind === 'grenade' || b.kind === 'rocket' || b.kind === 'disc') { detonate(g, b); break; }
       if (bullet) {
         // sgun_ai: a wall hit pops EXPLODE5; a hurtable hit pops EXPLODE3 and
         // deals 5 damage with a push along the bullet's direction.
@@ -310,6 +457,14 @@ export function drawProjectiles(g, alpha) {
       dline(r, lx - 1, ly, tx - 1, ty, bright);
       dline(r, lx + 1, ly, tx + 1, ty, dark);
       dline(r, lx, ly, tx, ty, bright);
+    } else if (b.kind === 'beam') {
+      if (b.pending) continue;
+      // pgun_draw: a line fading pink over its 5 ticks; lsaber_draw: white with a blue-grey edge
+      const ax = Math.round(b.ox - cx), ay = Math.round(b.oy - cy), bx = Math.round(b.x - cx), by = Math.round(b.y - cy);
+      if (b.style === 'plasma') dline(r, ax, ay, bx, by, col.plasma[Math.max(0, Math.min(4, 5 - b.life))]);
+      else { dline(r, ax, ay - 1, bx, by - 1, col.saberBlue); dline(r, ax, ay + 1, bx, by + 1, col.saberDark); dline(r, ax, ay, bx, by, col.white); }
+    } else if (b.kind === 'firebomb') {
+      continue; // fb_draw: nothing; its flames are its EXPLODE1s
     } else if (b.kind === 'plasma' || b.kind === 'acid' || b.kind === 'spark') {
       const c1 = b.kind === 'plasma' ? col.cyan : b.kind === 'acid' ? col.green : col.orange;
       const n = 3;

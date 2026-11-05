@@ -62,6 +62,11 @@ export class Game {
     this.hud = hud;
     this.keys = new Set();
     this.mouse = null;
+    // Weapons as the original has them (weapons.lsp, guns.lsp, cop.cpp): fire bombs that run along the floor
+    // burning, plasma and saber lines, the steered frisbee, player rockets that lock on, no hurt from one's own
+    // blasts. Off here, because the recorded winning runs (ppo-demo.json) were played with this game's own
+    // simplified weapons; WEaBuse3D turns it on. Turn it on here once the runs are searched again with it.
+    this.originalWeapons = false;
     this.mouseDown = false;
     this.god = false;
     // hardness.lsp ships with (setf difficulty 'easy): damage to the player is
@@ -167,6 +172,8 @@ export class Game {
     };
     this.colors = {
       white: nearest(255, 255, 255), yellow: nearest(255, 230, 90), cyan: nearest(120, 220, 255),
+      // weapons.lsp pgun_draw: find_rgb c c/2 c, fading; lsaber_draw: find_rgb 147 155 195 and 70 59 67
+      plasma: [255, 215, 175, 135, 95].map((c) => nearest(c, c >> 1, c)), saberBlue: nearest(147, 155, 195), saberDark: nearest(70, 59, 67),
       green: nearest(90, 255, 90), orange: nearest(255, 140, 40), black: nearest(0, 0, 0),
       redBright: nearest(255, 0, 0), redDark: nearest(150, 0, 0),
     };
@@ -647,10 +654,18 @@ export class Game {
     }
   }
 
-  explode(x, y, radius, dmg, fromPlayer, noEntities = false, exclude = null, sparePlayer = false) {
-    this.effect('EXPLODE1', x, y);
-    this.effect('EXPLODE3', x + this.rand(10) - 5, y + this.rand(10) - 5);
+  // explo.lsp do_explo (EXPLODE1) or do_white_explo (fx 'EXPLODE8', the death frisbee's), then hurt_radius.
+  explode(x, y, radius, dmg, fromPlayer, noEntities = false, exclude = null, sparePlayer = false, fx = 'EXPLODE1') {
+    this.effect(fx, x, y);
+    if (fx === 'EXPLODE1') this.effect('EXPLODE3', x + this.rand(10) - 5, y + this.rand(10) - 5);
     this.sound('explode', x, y);
+    this.hurtRadius(x, y, radius, dmg, fromPlayer, noEntities, exclude, sparePlayer);
+  }
+
+  // level.cpp hurt_radius: everything hurtable within the radius, the damage falling off with distance; the
+  // object that set it off (its creator, for a shot) is excluded. Also on its own: weapons.lsp firebomb_ai
+  // burns its radius every tick.
+  hurtRadius(x, y, radius, dmg, fromPlayer, noEntities = false, exclude = null, sparePlayer = false) {
     if (!noEntities) {
       // Linear falloff like the original hurt_radius: damage = (r - d) * m / r.
       for (const e of this.entities) {
