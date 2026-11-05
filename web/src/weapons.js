@@ -27,13 +27,20 @@ export const WEAPON_ORDER = ['MGUN', 'PGUN', 'GRENADE', 'ROCKET', 'FIREBOMB', 'D
 
 // abuse.lsp bad_guy_list (the types the original's seekers look for), as far as this game has them
 const BAD_GUYS = new Set(['ANT_ROOF', 'TRACK_GUN', 'SPRAY_GUN', 'JUGGER', 'ROB1', 'WHO', 'FLYER', 'GREEN_FLYER', 'BOSS_ANT']);
-const badGuyNear = (g, x, y, rx, ry, skip = null) => {
+// level.cpp can_see: nothing solid on the line between two points (in 2 px steps)
+const canSee = (g, x0, y0, x1, y1) => {
+  const n = Math.ceil(Math.hypot(x1 - x0, y1 - y0) / 2);
+  for (let i = 1; i < n; i++) if (g.tileSolid(Math.floor(x0 + ((x1 - x0) * i) / n), Math.floor(y0 + ((y1 - y0) * i) / n))) return false;
+  return true;
+};
+const badGuyNear = (g, x, y, rx, ry, skip = null, sight = false) => {
   let best = null, bd = Infinity;
   for (const e of g.entities) {
     if (e.dead || e === skip || !BAD_GUYS.has(e.type) || !e.shootable) continue;
     const dx = Math.abs(e.x - x), dy = Math.abs(e.y - y);
     if (dx >= rx || dy >= ry) continue;
     if (g.apart?.(skip, e)) continue; // (a 3D host: only what is at the shot's depth)
+    if (sight && !canSee(g, x, y - 20, e.x, e.y - 15)) continue; // (fire_object 3 locks on only in line of sight, from the gun)
     const d = dx * dx + dy * dy;
     if (d < bd) { bd = d; best = e; }
   }
@@ -163,7 +170,7 @@ export function firePlayer(g) {
     // 3: speed 5, gaining 2 a tick to 14 (the player's), turning up to 23 degrees a tick towards its target
     // (rocket_ai), straight on without one; do_explo 40 50 on a hit or within 10 of the target.
     const b = { kind: 'rocket', x: ox, y: oy, px: ox, py: oy, vx: c * 5, vy: s * 5, life: 90, dmg: 50, radius: 40, mine: true, def: 'ROCKET', smoke: 0, homing: true, speed: 5, maxSpeed: 14, angDeg: ((p.aimAngle % 360) + 360) % 360, hp: 4 };
-    b.target = badGuyNear(g, p.x, p.y, 160, 130);
+    b.target = badGuyNear(g, p.x, p.y, 160, 130, null, true);
     g.projs.push(b);
     g.sound('rocket');
   }
@@ -303,7 +310,8 @@ function traceBeam(g, b) {
 // weapons.lsp firebomb_ai, one tick: flame and burn where it is, then move on (it falls; once down it slows
 // by its stop_accel, 4, ability.cpp) while it is young or still moving, for 20 ticks, until blocked.
 function fireBombTick(g, b) {
-  g.effect('EXPLODE1', b.x - g.rand(5), b.y + g.rand(20));
+  const fx = g.effect('EXPLODE1', b.x - g.rand(5), b.y + g.rand(20));
+  if (fx) fx.flame = true; // (for drawing: a fire bomb's flame, not an explosion)
   g.blast = b;
   g.hurtRadius(b.x, b.y, b.radius, b.dmg, b.mine, false, null, !!b.mine);
   g.blast = null;
