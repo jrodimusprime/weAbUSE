@@ -156,6 +156,7 @@ function hitAt(g, b) {
   if (b.mine) {
     for (const e of g.entities) {
       if (e.dead || !e.shootable) continue;
+      if (g.apart?.(b, e)) continue; // a 3D host's depth check (WEaBuse3D); not set in this game
       const r = g.rectOf(e);
       if (r && b.x >= r.x0 && b.x <= r.x1 && b.y >= r.y0 && b.y <= r.y1) return { entity: e };
     }
@@ -167,7 +168,7 @@ function hitAt(g, b) {
     }
   } else {
     const r = g.playerRect();
-    if (b.x >= r.x0 && b.x <= r.x1 && b.y >= r.y0 && b.y <= r.y1) return { player: true };
+    if (b.x >= r.x0 && b.x <= r.x1 && b.y >= r.y0 && b.y <= r.y1 && !g.apart?.(b, g.player)) return { player: true };
     // ...and the same the other way: the player's rockets are the same
     // ROCKET, and an enemy's shot can bring one down.
     for (const q of g.projs) {
@@ -181,7 +182,9 @@ function hitAt(g, b) {
 function detonate(g, b) {
   if (b.dead) return;
   b.dead = true;
+  g.blast = b; // what is blowing up, for a 3D host's depth check (see Game.explode)
   g.explode(b.x, b.y, b.radius, b.dmg, b.mine);
+  g.blast = null;
 }
 
 // Which projectiles are the original's ROCKET (weapons.lsp: hurtable, start_hp

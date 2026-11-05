@@ -655,6 +655,7 @@ export class Game {
       // Linear falloff like the original hurt_radius: damage = (r - d) * m / r.
       for (const e of this.entities) {
         if (e.dead || e === exclude || !e.shootable) continue;
+        if (this.apart?.(this.blast, e)) continue; // a 3D host's depth check (WEaBuse3D); not set in this game
         const d = Math.hypot(e.x - x, e.y - 10 - y);
         if (d < radius) this.damage(e, Math.max(1, ((radius - d) * dmg) / radius));
       }
@@ -665,7 +666,7 @@ export class Game {
     if (sparePlayer) return; // hurt_radius with the player as its excluded object
     const p = this.player;
     const d = Math.hypot(p.x - x, p.y - 18 - y);
-    if (d < radius) {
+    if (d < radius && !this.apart?.(this.blast, p)) {
       this.hurtPlayer(Math.max(1, ((radius - d) * dmg * (fromPlayer ? 0.5 : 1)) / radius));
       p.vx += Math.sign(p.x - x || 1) * (1 - d / radius) * 180;
       p.vy -= (1 - d / radius) * 120;
