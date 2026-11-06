@@ -1087,7 +1087,8 @@ export class Game {
       // player is moved a second time every tick, i.e. twice as fast on the
       // ground and in the air.
       const fast = power === 'FAST' ? 2 : 1;
-      const cap = (p.ground ? RUN_SPEED : AIR_SPEED) * fast;
+      // (runShare: a 3D host's share of the top speed for a run at an angle across its hall; not set in this game)
+      const cap = (p.ground ? RUN_SPEED : AIR_SPEED) * fast * (this.runShare ?? 1);
       if (target) { p.dir = target; p.vx += target * ACCEL * fast * dt; p.vx = Math.max(-cap, Math.min(cap, p.vx)); }
       else p.vx -= Math.sign(p.vx) * Math.min(Math.abs(p.vx), DECEL * dt);
 
