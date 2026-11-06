@@ -67,6 +67,8 @@ export class Game {
     // blasts. Off here, because the recorded winning runs (ppo-demo.json) were played with this game's own
     // simplified weapons; WEaBuse3D turns it on. Turn it on here once the runs are searched again with it.
     this.originalWeapons = false;
+    // A lift that waits for its rider (liftHold): a 3D host's rule, off here, where lifts move as the original's do.
+    this.liftWaits = false;
     this.mouseDown = false;
     this.god = false;
     // hardness.lsp ships with (setf difficulty 'easy): damage to the player is
@@ -571,6 +573,35 @@ export class Game {
       if (dy && !(dy < 0 ? this.pointHits(p.x, p.y + dy - BODY_H) && !this.pointHits(p.x, p.y - BODY_H) : false)) p.y += dy;
       p.vy = 0; p.ground = true;
     }
+  }
+
+  // liftWaits (off in this game; WEaBuse3D turns it on): whether lift `e` waits this tick rather than move by
+  // (dx, dy). A rider (standing on the deck, their centre over it) it cannot carry the whole step without their
+  // box meeting a wall (a shaft narrower than the deck) is drawn across the deck, 3 px a tick, to where it can,
+  // and it waits meanwhile; with nowhere on the deck that fits, it waits for them to move. And it does not rise
+  // through a player half on it: one whose box it would sweep through, not riding it. (WEaBuse3D, Jared: "you get
+  // knocked off if you dont stand on it perfectly when it goes up so maybe dont let it go up if you block it")
+  liftHold(e, dx, dy) {
+    const p = this.player;
+    if (!this.liftWaits || p.dead || (!dx && !dy)) return false;
+    const r = this.deckRect(e);
+    if (!r) return false;
+    const others = new Set([...this.around, e]);
+    const riding = p.x >= r.x0 && p.x <= r.x1 && p.y >= r.y0 - 2 && p.y <= r.y0 + 4;
+    if (riding) {
+      const y = r.y0 + dy, fits = (x) => !this.boxHits(x + dx, y, HALF_W, BODY_H, others);
+      if (fits(p.x)) return false;
+      if (dx) return true; // (carried along: no other place on the deck would do better)
+      let to = null;
+      for (let k = 1; k <= r.x1 - r.x0 && to === null; k++) {
+        for (const x of [p.x + k, p.x - k]) if (x >= r.x0 && x <= r.x1 && fits(x) && to === null) to = x;
+      }
+      if (to !== null) p.x += Math.max(-3, Math.min(3, to - p.x));
+      return true;
+    }
+    if (dy >= 0) return false;
+    const over = p.x + HALF_W >= r.x0 && p.x - HALF_W <= r.x1;
+    return over && p.y > r.y0 + dy && p.y - BODY_H < r.y1;
   }
 
   spawn(typeName, x, y) {

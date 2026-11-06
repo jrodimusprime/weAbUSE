@@ -1074,11 +1074,14 @@ function platform(e, g) {
       const src = e.links[e.aitype], dst = e.links[1 - e.aitype];
       if (!src || !dst) { e.aistate = 0; break; }
       let nx, ny;
-      if (e.xvel <= 0) { nx = dst.x; ny = dst.y; e.aistate = 0; } else {
-        if (e.xvel === 6) g.sound('eledec01', e.x, e.y); // PLAT_D_SND
+      if (e.xvel <= 0) { nx = dst.x; ny = dst.y; } else {
         const sp = speed();
         nx = dst.x - Math.trunc(((dst.x - src.x) * e.xvel) / sp);
         ny = dst.y - Math.trunc(((dst.y - src.y) * e.xvel) / sp);
+      }
+      if (g.liftHold(e, nx - e.x, ny - e.y)) break; // (a 3D host's lift waiting for its rider; never here)
+      if (e.xvel <= 0) e.aistate = 0; else {
+        if (e.xvel === 6) g.sound('eledec01', e.x, e.y); // PLAT_D_SND
         e.xvel--;
       }
       g.pushRiders(e, nx - e.x, ny - e.y);
